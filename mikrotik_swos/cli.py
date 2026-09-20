@@ -5,91 +5,74 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import sys
 from typing import Any, List, Optional
 
 import shutil
 
 import click
-from rich.console import Console
-try:
-    from rich.console import Group
-except ImportError:
-    from rich.console import RenderGroup as Group  # type: ignore
-from rich.markup import escape
-from rich.measure import Measurement
-from rich.panel import Panel
-from rich.table import Table
 
 from mikrotik_swos.client import SwOSAuthError, SwOSClient, SwOSConnectionError, SwOSError
 from mikrotik_swos.codec import bitmask_to_ports, decode_hex_str, decode_ip, decode_mac, ports_to_bitmask
 from mikrotik_swos.tui import run_monitor
 
 
-def measure_renderable(console: Console, obj: Any) -> int:
-    """Measure the natural maximum width of a renderable across Rich versions."""
-    try:
-        # Modern Rich: Measurement.get(console, options, renderable)
-        m = Measurement.get(console, console.options.update_width(10000), obj)
-        return m.maximum
-    except (TypeError, ValueError, AttributeError):
-        pass
-    try:
-        # Older Rich (e.g. Debian packages): Measurement.get(console, renderable, max_width=10000)
-        m = Measurement.get(console, obj, 10000)
-        return m.maximum
-    except (TypeError, ValueError, AttributeError):
-        pass
-    try:
-        fn = getattr(obj, "__rich_measure__", None)
-        if callable(fn):
-            try:
-                return fn(console, console.options.update_width(10000)).maximum
-            except TypeError:
-                return fn(console, 10000).maximum
-    except Exception:
-        pass
-    return 80
+def format_table(
+    headers: List[str],
+    rows: List[List[str]],
+    aligns: Optional[List[str]] = None,
+) -> str:
+    """Format tabular data with natural column widths, zero truncation, and clean ASCII separators."""
+    if not headers:
+        return ""
+    if not rows:
+        sep = "-" * max(len(h) for h in headers)
+        return "  ".join(headers) + "\n" + "  ".join(sep for _ in headers)
+
+    aligns = aligns or ["<"] * len(headers)
+    widths = [len(h) for h in headers]
+    for row in rows:
+        for i, val in enumerate(row):
+            if i < len(widths):
+                widths[i] = max(widths[i], len(str(val)))
+            else:
+                widths.append(len(str(val)))
+
+    fmt_parts = [f"{{{i}:{aligns[i] if i < len(aligns) else '<'}{widths[i]}}}" for i in range(len(widths))]
+    fmt = "  ".join(fmt_parts)
+
+    hdr_vals = [headers[i] if i < len(headers) else "" for i in range(len(widths))]
+    hdr_line = fmt.format(*hdr_vals).rstrip()
+    sep_line = "  ".join("-" * w for w in widths).rstrip()
+    data_lines = [
+        fmt.format(*[str(row[i]) if i < len(row) else "" for i in range(len(widths))]).rstrip()
+        for row in rows
+    ]
+    return "\n".join([hdr_line, sep_line, *data_lines])
 
 
-class UntruncatedConsole(Console):
-    """Rich Console that ensures tables, panels, and groups are never truncated with ellipses.
-
-    When printing a Table, Panel, or Group, if the required width exceeds the terminal or pipe width
-    (default 80 cols), a console sized to the content's natural width is used so that data
-    is never truncated (allowing horizontal scrolling with `less -S` or full-width terminals).
-    """
-
-    def print(self, *objects: Any, **kwargs: Any) -> None:
-        has_renderable = any(isinstance(obj, (Table, Panel, Group)) for obj in objects)
-        if has_renderable:
-            max_w = 0
-            for obj in objects:
-                if isinstance(obj, (Table, Panel, Group)):
-                    w = measure_renderable(self, obj)
-                    if w > max_w:
-                        max_w = w
-            try:
-                term_w = shutil.get_terminal_size().columns
-            except Exception:
-                term_w = 80
-            target_w = max(term_w, max_w)
-            wide_console = Console(
-                file=self._file,
-                stderr=self.stderr,
-                width=target_w,
-                height=1000,
-                emoji=self._emoji,
-                color_system=self.color_system,
-                no_color=self.no_color,
-                soft_wrap=self.soft_wrap,
-            )
-            wide_console.print(*objects, **kwargs)
-        else:
-            super().print(*objects, **kwargs)
+_MARKUP_RE = re.compile(r"\[/?(?:bold|dim|green|red|cyan|yellow|magenta|white|blue)[^\]]*\]")
 
 
-console = UntruncatedConsole(emoji=False)
+def strip_markup(text: Any) -> str:
+    return _MARKUP_RE.sub("", str(text))
+
+
+def print_err(msg: str) -> None:
+    print(f"Error: {msg}", file=sys.stderr)
+
+
+class PlainConsole:
+    """Minimal plain-text console replacement for backwards compatibility."""
+
+    def print(self, *args: Any, **kwargs: Any) -> None:
+        file = kwargs.get("file", sys.stdout)
+        clean_args = [strip_markup(a) if isinstance(a, str) else a for a in args]
+        print(*clean_args, file=file)
+
+
+console = PlainConsole()
 
 
 def get_client(ctx: click.Context) -> SwOSClient:
@@ -133,7 +116,7 @@ def cmd_system(ctx: click.Context):
     try:
         info = client.get_system()
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
     data = {
@@ -160,29 +143,28 @@ def cmd_system(ctx: click.Context):
     }
 
     def render():
-        table = Table(title=f"System Information: {info.identity} ({info.board})", border_style="blue")
-        table.add_column("Property", style="bold cyan", no_wrap=True)
-        table.add_column("Value", style="white", no_wrap=True)
-
-        table.add_row("Identity", info.identity)
-        table.add_row("Board Model", info.board)
-        table.add_row("SwOS Firmware Version", f"{info.version} (Build: {info.build_datetime.strftime('%Y-%m-%d %H:%M:%S UTC')})")
-        table.add_row("Serial Number", info.serial)
-        table.add_row("MAC Address", info.mac)
-        table.add_row("Current IP Address", info.ip)
-        table.add_row("Static IP Address", info.static_ip)
-        table.add_row("IP Acquisition Mode", info.ip_mode)
-        table.add_row("System Uptime", f"{info.uptime_str} ({info.uptime_centisec / 100:.1f}s)")
-        table.add_row("Watchdog Timer", "Enabled" if info.watchdog else "Disabled")
-        table.add_row("MikroTik Discovery Protocol", "Enabled" if info.discovery else "Disabled")
-        table.add_row("Independent VLAN Lookup (IVL)", "Enabled" if info.ivl else "Disabled")
-        table.add_row("IGMP Snooping", "Enabled" if info.igmp_snooping else "Disabled")
-        table.add_row("Allow Admin From IP", f"{info.allow_from_ip}/{info.allow_from_mask}")
-        table.add_row("Allow Admin From Ports", ", ".join(f"Port{p+1}" for p in info.allow_from_ports))
-        table.add_row("Allow Admin From VLAN", str(info.allow_from_vlan))
-        table.add_row("Bridge Priority", f"{hex(info.bridge_priority)} ({info.bridge_priority})")
-        table.add_row("Root Bridge", f"{hex(info.root_bridge_priority)}.{info.root_bridge_mac}")
-        console.print(table)
+        rows = [
+            ["Identity", info.identity],
+            ["Board Model", info.board],
+            ["SwOS Firmware Version", f"{info.version} (Build: {info.build_datetime.strftime('%Y-%m-%d %H:%M:%S UTC')})"],
+            ["Serial Number", info.serial],
+            ["MAC Address", info.mac],
+            ["Current IP Address", info.ip],
+            ["Static IP Address", info.static_ip],
+            ["IP Acquisition Mode", info.ip_mode],
+            ["System Uptime", f"{info.uptime_str} ({info.uptime_centisec / 100:.1f}s)"],
+            ["Watchdog Timer", "Enabled" if info.watchdog else "Disabled"],
+            ["MikroTik Discovery Protocol", "Enabled" if info.discovery else "Disabled"],
+            ["Independent VLAN Lookup (IVL)", "Enabled" if info.ivl else "Disabled"],
+            ["IGMP Snooping", "Enabled" if info.igmp_snooping else "Disabled"],
+            ["Allow Admin From IP", f"{info.allow_from_ip}/{info.allow_from_mask}"],
+            ["Allow Admin From Ports", ", ".join(f"Port{p+1}" for p in info.allow_from_ports)],
+            ["Allow Admin From VLAN", str(info.allow_from_vlan)],
+            ["Bridge Priority", f"{hex(info.bridge_priority)} ({info.bridge_priority})"],
+            ["Root Bridge", f"{hex(info.root_bridge_priority)}.{info.root_bridge_mac}"],
+        ]
+        print(f"System Information: {info.identity} ({info.board})")
+        print(format_table(["Property", "Value"], rows))
 
     output_data(ctx, data, render)
 
@@ -197,7 +179,7 @@ def cmd_ports(ctx: click.Context):
     try:
         ports = client.get_ports()
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
     data = [
@@ -222,30 +204,18 @@ def cmd_ports(ctx: click.Context):
     ]
 
     def render():
-        table = Table(title="SwOS Port Overview", border_style="cyan")
-        table.add_column("#", justify="right", style="bold cyan", no_wrap=True)
-        table.add_column("Name", style="bold white", no_wrap=True)
-        table.add_column("State", justify="center", no_wrap=True)
-        table.add_column("Link", justify="center", no_wrap=True)
-        table.add_column("Speed", justify="center", no_wrap=True)
-        table.add_column("Duplex", justify="center", no_wrap=True)
-        table.add_column("AutoNeg", justify="center", no_wrap=True)
-        table.add_column("FlowCtrl", justify="center", no_wrap=True)
-        table.add_column("PVID", justify="right", no_wrap=True)
-        table.add_column("VLAN Mode", justify="center", no_wrap=True)
-        table.add_column("PoE Mode", justify="center", no_wrap=True)
-        table.add_column("PoE W", justify="right", no_wrap=True)
-
+        headers = ["#", "Name", "State", "Link", "Speed", "Duplex", "AutoNeg", "FlowCtrl", "PVID", "VLAN Mode", "PoE Mode", "PoE W"]
+        aligns = [">", "<", "<", "<", "<", "<", "<", "<", ">", "<", "<", ">"]
+        rows = []
         for p in ports:
-            state_str = "[green]Enabled[/]" if p.enabled else "[dim red]Disabled[/]"
-            link_str = "[bold green]UP[/]" if p.link_up else "[dim red]DOWN[/]"
+            state_str = "Enabled" if p.enabled else "Disabled"
+            link_str = "UP" if p.link_up else "DOWN"
             speed_str = p.speed if p.link_up else "-"
             duplex_str = p.duplex if p.link_up else "-"
             an_str = "Yes" if p.auto_negotiation else "No"
             fct_str = "Yes" if p.flow_control else "No"
             pwr_str = f"{p.poe_power_w:.1f} W" if p.poe_power_w > 0 else "-"
-
-            table.add_row(
+            rows.append([
                 str(p.index + 1),
                 p.name,
                 state_str,
@@ -258,8 +228,9 @@ def cmd_ports(ctx: click.Context):
                 p.vlan_mode,
                 p.poe_mode,
                 pwr_str,
-            )
-        console.print(table)
+            ])
+        print("SwOS Port Overview:")
+        print(format_table(headers, rows, aligns))
 
     output_data(ctx, data, render)
 
@@ -276,7 +247,7 @@ def cmd_stats(ctx: click.Context, errors: bool, packets: bool):
     try:
         stats = client.get_stats()
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
     data = [
@@ -307,20 +278,11 @@ def cmd_stats(ctx: click.Context, errors: bool, packets: bool):
 
     def render():
         if errors:
-            table = Table(title="Port Error Counters", border_style="red")
-            table.add_column("Port", style="bold cyan", no_wrap=True)
-            table.add_column("Rx Errors", justify="right", no_wrap=True)
-            table.add_column("Tx Errors", justify="right", no_wrap=True)
-            table.add_column("Rx FCS", justify="right", no_wrap=True)
-            table.add_column("Rx Align", justify="right", no_wrap=True)
-            table.add_column("Rx Runts", justify="right", no_wrap=True)
-            table.add_column("Rx Frag", justify="right", no_wrap=True)
-            table.add_column("Rx TooLong", justify="right", no_wrap=True)
-            table.add_column("Tx Collis", justify="right", no_wrap=True)
-            table.add_column("Tx Underrun", justify="right", no_wrap=True)
-
+            headers = ["Port", "Rx Errors", "Tx Errors", "Rx FCS", "Rx Align", "Rx Runts", "Rx Frag", "Rx TooLong", "Tx Collis", "Tx Underrun"]
+            aligns = ["<"] + [">"] * 9
+            rows = []
             for s in stats:
-                table.add_row(
+                rows.append([
                     s.name,
                     str(s.rx_errors),
                     str(s.tx_errors),
@@ -331,28 +293,16 @@ def cmd_stats(ctx: click.Context, errors: bool, packets: bool):
                     str(s.rx_too_long),
                     str(s.tx_collisions),
                     str(s.tx_underruns),
-                )
-            console.print(table)
+                ])
+            print("Port Error Counters:")
+            print(format_table(headers, rows, aligns))
         else:
-            table = Table(title="Port Traffic Counters", border_style="green")
-            table.add_column("Port", style="bold cyan", no_wrap=True)
-            table.add_column("Rx Rate", justify="right", style="bright_cyan", no_wrap=True)
-            table.add_column("Tx Rate", justify="right", style="bright_green", no_wrap=True)
-            table.add_column("Rx Bytes", justify="right", no_wrap=True)
-            table.add_column("Tx Bytes", justify="right", no_wrap=True)
-            table.add_column("Rx Packets", justify="right", no_wrap=True)
-            table.add_column("Tx Packets", justify="right", no_wrap=True)
-            table.add_column("Rx Ucast", justify="right", no_wrap=True)
-            table.add_column("Tx Ucast", justify="right", no_wrap=True)
-            table.add_column("Rx Bcast", justify="right", no_wrap=True)
-            table.add_column("Tx Bcast", justify="right", no_wrap=True)
-            table.add_column("Errors (Rx/Tx)", justify="center", no_wrap=True)
-
+            headers = ["Port", "Rx Rate", "Tx Rate", "Rx Bytes", "Tx Bytes", "Rx Packets", "Tx Packets", "Rx Ucast", "Tx Ucast", "Rx Bcast", "Tx Bcast", "Errors (Rx/Tx)"]
+            aligns = ["<", ">", ">", ">", ">", ">", ">", ">", ">", ">", ">", "<"]
+            rows = []
             for s in stats:
                 err_str = f"{s.rx_errors}/{s.tx_errors}"
-                if s.rx_errors > 0 or s.tx_errors > 0:
-                    err_str = f"[bold red]{err_str}[/]"
-                table.add_row(
+                rows.append([
                     s.name,
                     s.rx_rate_str,
                     s.tx_rate_str,
@@ -365,8 +315,9 @@ def cmd_stats(ctx: click.Context, errors: bool, packets: bool):
                     f"{s.rx_broadcast:,}",
                     f"{s.tx_broadcast:,}",
                     err_str,
-                )
-            console.print(table)
+                ])
+            print("Port Traffic Counters:")
+            print(format_table(headers, rows, aligns))
 
     output_data(ctx, data, render)
 
@@ -387,7 +338,7 @@ def cmd_hosts(ctx: click.Context, port: Optional[int], vlan: Optional[int], stat
     try:
         hosts = client.get_hosts(dynamic=inc_dyn, static=inc_sta)
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
     if port is not None:
@@ -409,24 +360,20 @@ def cmd_hosts(ctx: click.Context, port: Optional[int], vlan: Optional[int], stat
     ]
 
     def render():
-        table = Table(title=f"MAC Address Host Table ({len(hosts)} entries)", border_style="yellow")
-        table.add_column("MAC Address", style="bold yellow")
-        table.add_column("Port", style="cyan")
-        table.add_column("VLAN ID", justify="right")
-        table.add_column("Type", justify="center")
-        table.add_column("Drop", justify="center")
-        table.add_column("Mirror", justify="center")
-
+        headers = ["MAC Address", "Port", "VLAN ID", "Type", "Drop", "Mirror"]
+        aligns = ["<", "<", ">", "<", "<", "<"]
+        rows = []
         for h in hosts:
-            table.add_row(
-                escape(h.mac),
+            rows.append([
+                h.mac,
                 h.port_name,
                 str(h.vlan_id),
                 "Dynamic" if h.dynamic else "Static",
                 "Yes" if h.drop else "No",
                 "Yes" if h.mirror else "No",
-            )
-        console.print(table)
+            ])
+        print(f"MAC Address Host Table ({len(hosts)} entries):")
+        print(format_table(headers, rows, aligns))
 
     output_data(ctx, data, render)
 
@@ -442,7 +389,7 @@ def cmd_vlan(ctx: click.Context):
         ports = client.get_ports()
         vlans = client.get_vlans()
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
     data = {
@@ -470,41 +417,32 @@ def cmd_vlan(ctx: click.Context):
     }
 
     def render():
-        p_table = Table(title="Per-Port VLAN Modes", border_style="cyan")
-        p_table.add_column("Port", style="bold cyan", no_wrap=True)
-        p_table.add_column("PVID (Default VID)", justify="right", no_wrap=True)
-        p_table.add_column("VLAN Mode", justify="center", no_wrap=True)
-        p_table.add_column("VLAN Receive", justify="center", no_wrap=True)
-        p_table.add_column("VLAN Header", justify="center", no_wrap=True)
+        p_headers = ["Port", "PVID (Default VID)", "VLAN Mode", "VLAN Receive", "VLAN Header"]
+        p_aligns = ["<", ">", "<", "<", "<"]
+        p_rows = [
+            [p.name, str(p.default_vlan_id), p.vlan_mode, p.vlan_receive, p.vlan_header]
+            for p in ports
+        ]
+        print("Per-Port VLAN Modes:")
+        print(format_table(p_headers, p_rows, p_aligns))
+        print("")
 
-        for p in ports:
-            p_table.add_row(
-                p.name,
-                str(p.default_vlan_id),
-                p.vlan_mode,
-                p.vlan_receive,
-                p.vlan_header,
-            )
-        console.print(p_table)
-
-        v_table = Table(title=f"Static VLAN Table ({len(vlans)} entries)", border_style="magenta")
-        v_table.add_column("VLAN ID", justify="right", style="bold magenta", no_wrap=True)
-        v_table.add_column("IVL", justify="center", no_wrap=True)
-        v_table.add_column("IGMP Snooping", justify="center", no_wrap=True)
-        v_table.add_column("Member Ports", style="white", no_wrap=True)
-
+        v_headers = ["VLAN ID", "IVL", "IGMP Snooping", "Member Ports"]
+        v_aligns = [">", "<", "<", "<"]
+        v_rows = []
         if not vlans:
-            v_table.add_row("None", "-", "-", "No static VLANs defined")
+            v_rows.append(["None", "-", "-", "No static VLANs defined"])
         else:
             for v in vlans:
                 ports_str = ", ".join(v.port_names) if v.port_names else "None"
-                v_table.add_row(
+                v_rows.append([
                     str(v.vlan_id),
                     "Yes" if v.ivl else "No",
                     "Yes" if v.igmp_snooping else "No",
                     ports_str,
-                )
-        console.print(v_table)
+                ])
+        print(f"Static VLAN Table ({len(vlans)} entries):")
+        print(format_table(v_headers, v_rows, v_aligns))
 
     output_data(ctx, data, render)
 
@@ -520,7 +458,7 @@ def cmd_fwd(ctx: click.Context):
         fwd = client.get_forwarding()
         link_data = client.get("link.b")
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
     names = [decode_hex_str(x) for x in link_data.get("nm", [])]
@@ -540,26 +478,27 @@ def cmd_fwd(ctx: click.Context):
     }
 
     def render():
-        table = Table(title="Port Forwarding Isolation Matrix", border_style="blue")
-        table.add_column("Ingress Port", style="bold cyan", no_wrap=True)
-        table.add_column("Can Forward To Ports", style="white", no_wrap=True)
-
+        headers = ["Ingress Port", "Can Forward To Ports"]
+        rows = []
         for src, dsts in matrix.items():
-            table.add_row(src, ", ".join(dsts) if dsts else "[dim]Isolated[/]")
-        console.print(table)
+            rows.append([src, ", ".join(dsts) if dsts else "Isolated"])
+        print("Port Forwarding Isolation Matrix:")
+        print(format_table(headers, rows))
+        print("")
 
         mrto = fwd.get("mrto", 0)
         target_name = names[mrto] if mrto < len(names) else f"Port{mrto+1}"
         imr_ports = [names[p] for p in bitmask_to_ports(fwd.get("imr", 0), len(names))]
         omr_ports = [names[p] for p in bitmask_to_ports(fwd.get("omr", 0), len(names))]
 
-        m_table = Table(title="Port Mirroring", border_style="yellow")
-        m_table.add_column("Parameter", style="bold yellow", no_wrap=True)
-        m_table.add_column("Value", style="white", no_wrap=True)
-        m_table.add_row("Mirror Target Port", target_name)
-        m_table.add_row("Mirror Ingress From", ", ".join(imr_ports) if imr_ports else "None")
-        m_table.add_row("Mirror Egress From", ", ".join(omr_ports) if omr_ports else "None")
-        console.print(m_table)
+        m_headers = ["Parameter", "Value"]
+        m_rows = [
+            ["Mirror Target Port", target_name],
+            ["Mirror Ingress From", ", ".join(imr_ports) if imr_ports else "None"],
+            ["Mirror Egress From", ", ".join(omr_ports) if omr_ports else "None"],
+        ]
+        print("Port Mirroring:")
+        print(format_table(m_headers, m_rows))
 
     output_data(ctx, data, render)
 
@@ -576,7 +515,7 @@ def cmd_rstp(ctx: click.Context):
         sys_data = client.get("sys.b")
         link_data = client.get("link.b")
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
     names = [decode_hex_str(x) for x in link_data.get("nm", [])]
@@ -613,32 +552,23 @@ def cmd_rstp(ctx: click.Context):
         })
 
     def render():
-        console.print(Panel(
-            f"[bold cyan]Root Bridge:[/] [white]{data['root_bridge']}[/]   "
-            f"[bold cyan]Bridge Priority:[/] [white]{data['bridge_priority']}[/]",
-            title="Spanning Tree (RSTP)", border_style="cyan"
-        ))
-
-        table = Table(title="RSTP Per-Port Status", border_style="cyan")
-        table.add_column("Port", style="bold cyan", no_wrap=True)
-        table.add_column("RSTP", justify="center", no_wrap=True)
-        table.add_column("Role", justify="center", no_wrap=True)
-        table.add_column("Path Cost", justify="right", no_wrap=True)
-        table.add_column("Root Path Cost", justify="right", no_wrap=True)
-        table.add_column("P2P", justify="center", no_wrap=True)
-        table.add_column("Edge", justify="center", no_wrap=True)
-
+        print(f"Spanning Tree (RSTP): Root Bridge: {data['root_bridge']}  Bridge Priority: {data['bridge_priority']}")
+        print("")
+        headers = ["Port", "RSTP", "Role", "Path Cost", "Root Path Cost", "P2P", "Edge"]
+        aligns = ["<", "<", "<", ">", ">", "<", "<"]
+        rows = []
         for p in data["ports"]:
-            table.add_row(
+            rows.append([
                 p["name"],
-                "[green]Enabled[/]" if p["enabled"] else "[dim]Disabled[/]",
+                "Enabled" if p["enabled"] else "Disabled",
                 p["role"],
                 str(p["path_cost"]),
                 str(p["root_path_cost"]),
                 "Yes" if p["p2p"] else "No",
                 "Yes" if p["edge"] else "No",
-            )
-        console.print(table)
+            ])
+        print("RSTP Per-Port Status:")
+        print(format_table(headers, rows, aligns))
 
     output_data(ctx, data, render)
 
@@ -653,7 +583,7 @@ def cmd_sfp(ctx: click.Context):
     try:
         sfp = client.get_sfp()
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
     data = {
@@ -672,30 +602,29 @@ def cmd_sfp(ctx: click.Context):
     }
 
     def render():
-        table = Table(title="SFP Optical Transceiver Information", border_style="green")
-        table.add_column("Parameter", style="bold green", no_wrap=True)
-        table.add_column("Value", style="white", no_wrap=True)
-
+        headers = ["Parameter", "Value"]
+        rows = []
         if not sfp.present:
-            table.add_row("Module Status", "[dim]No SFP transceiver detected / Module not present[/]")
+            rows.append(["Module Status", "No SFP transceiver detected / Module not present"])
         else:
-            table.add_row("Vendor", sfp.vendor)
-            table.add_row("Part Number", sfp.part_number)
-            table.add_row("Revision", sfp.revision)
-            table.add_row("Serial Number", sfp.serial)
-            table.add_row("Manufacturing Date", sfp.date)
-            table.add_row("Transceiver Type", sfp.sfp_type)
+            rows.append(["Vendor", sfp.vendor])
+            rows.append(["Part Number", sfp.part_number])
+            rows.append(["Revision", sfp.revision])
+            rows.append(["Serial Number", sfp.serial])
+            rows.append(["Manufacturing Date", sfp.date])
+            rows.append(["Transceiver Type", sfp.sfp_type])
             if sfp.temperature_c is not None:
-                table.add_row("Temperature", f"{sfp.temperature_c:.1f} °C")
+                rows.append(["Temperature", f"{sfp.temperature_c:.1f} °C"])
             if sfp.voltage_v is not None:
-                table.add_row("Supply Voltage", f"{sfp.voltage_v:.2f} V")
+                rows.append(["Supply Voltage", f"{sfp.voltage_v:.2f} V"])
             if sfp.tx_bias_ma is not None:
-                table.add_row("Tx Bias Current", f"{sfp.tx_bias_ma:.2f} mA")
+                rows.append(["Tx Bias Current", f"{sfp.tx_bias_ma:.2f} mA"])
             if sfp.tx_power_dbm is not None:
-                table.add_row("Tx Power", f"{sfp.tx_power_dbm:.2f} dBm")
+                rows.append(["Tx Power", f"{sfp.tx_power_dbm:.2f} dBm"])
             if sfp.rx_power_dbm is not None:
-                table.add_row("Rx Power", f"{sfp.rx_power_dbm:.2f} dBm")
-        console.print(table)
+                rows.append(["Rx Power", f"{sfp.rx_power_dbm:.2f} dBm"])
+        print("SFP Optical Transceiver Information:")
+        print(format_table(headers, rows))
 
     output_data(ctx, data, render)
 
@@ -710,7 +639,7 @@ def cmd_snmp(ctx: click.Context):
     try:
         snmp = client.get_snmp()
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
     data = {
@@ -721,14 +650,15 @@ def cmd_snmp(ctx: click.Context):
     }
 
     def render():
-        table = Table(title="SNMP Configuration", border_style="blue")
-        table.add_column("Setting", style="bold cyan", no_wrap=True)
-        table.add_column("Value", style="white", no_wrap=True)
-        table.add_row("SNMP Service", "[green]Enabled[/]" if snmp.enabled else "[dim]Disabled[/]")
-        table.add_row("Community", snmp.community)
-        table.add_row("Contact Info", snmp.contact or "[dim]Not set[/]")
-        table.add_row("Location", snmp.location or "[dim]Not set[/]")
-        console.print(table)
+        headers = ["Setting", "Value"]
+        rows = [
+            ["SNMP Service", "Enabled" if snmp.enabled else "Disabled"],
+            ["Community", snmp.community],
+            ["Contact Info", snmp.contact or "Not set"],
+            ["Location", snmp.location or "Not set"],
+        ]
+        print("SNMP Configuration:")
+        print(format_table(headers, rows))
 
     output_data(ctx, data, render)
 
@@ -743,29 +673,26 @@ def cmd_acl(ctx: click.Context):
     try:
         rules = client.get_acl()
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
     def render():
-        table = Table(title=f"Access Control List Rules ({len(rules)} rules)", border_style="magenta")
-        table.add_column("#", justify="right", style="bold magenta", no_wrap=True)
-        table.add_column("From", justify="center", no_wrap=True)
-        table.add_column("MAC Match", style="white", no_wrap=True)
-        table.add_column("IP Match", style="white", no_wrap=True)
-        table.add_column("Action", style="yellow", no_wrap=True)
-
+        headers = ["#", "From", "MAC Match", "IP Match", "Action"]
+        aligns = [">", "<", "<", "<", "<"]
+        rows = []
         if not rules:
-            table.add_row("-", "-", "No ACL rules configured", "-", "-")
+            rows.append(["-", "-", "No ACL rules configured", "-", "-"])
         else:
             for idx, r in enumerate(rules):
-                table.add_row(
+                rows.append([
                     str(idx + 1),
                     bin(r.get("frm", 0)),
                     f"Src:{decode_mac(r.get('smac'))} Dst:{decode_mac(r.get('dmac'))}",
                     f"Src:{decode_ip(r.get('sip'))} Dst:{decode_ip(r.get('dip'))}",
                     f"Redirect:{r.get('snd', '-')} Mirror:{r.get('mirr', 0)} Rate:{r.get('rate', '-')}",
-                )
-        console.print(table)
+                ])
+        print(f"Access Control List Rules ({len(rules)} rules):")
+        print(format_table(headers, rows, aligns))
 
     output_data(ctx, rules, render)
 
@@ -801,7 +728,7 @@ def cmd_set_port(
     try:
         ports = client.get_ports()
     except SwOSError as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
     port_idx = None
@@ -816,10 +743,10 @@ def cmd_set_port(
                 break
 
     if port_idx is None:
-        console.print(f"[bold red]Error:[/] Unknown port '{port}'. Available: {', '.join(p.name for p in ports)}")
+        print_err(f"Unknown port '{port}'. Available: {', '.join(p.name for p in ports)}")
         sys.exit(1)
 
-    console.print(f"[bold cyan]Updating port #{port_idx+1} ({ports[port_idx].name})...[/]")
+    print(f"Updating port #{port_idx+1} ({ports[port_idx].name})...")
     try:
         client.set_port(
             port_index=port_idx,
@@ -834,9 +761,9 @@ def cmd_set_port(
         )
         updated_ports = client.get_ports()
         up = updated_ports[port_idx]
-        console.print(f"[bold green]✓ Port #{port_idx+1} updated successfully:[/] {up.name} (enabled={up.enabled}, speed={up.speed}, poe={up.poe_mode}, pvid={up.default_vlan_id})")
+        print(f"✓ Port #{port_idx+1} updated successfully: {up.name} (enabled={up.enabled}, speed={up.speed}, poe={up.poe_mode}, pvid={up.default_vlan_id})")
     except SwOSError as e:
-        console.print(f"[bold red]Failed to update port:[/] {e}")
+        print_err(f"Failed to update port: {e}")
         sys.exit(1)
 
 
@@ -883,7 +810,7 @@ def cmd_set_system(
     if allow_ports is not None:
         port_indices = [int(p.strip()) - 1 for p in allow_ports.split(",") if p.strip().isdigit()]
 
-    console.print("[bold cyan]Updating system configuration...[/]")
+    print("Updating system configuration...")
     try:
         client.set_system(
             identity=identity,
@@ -899,14 +826,14 @@ def cmd_set_system(
             poe_in_long_cable=lcbl_val,
         )
         info = client.get_system()
-        console.print(
-            f"[bold green]✓ System updated successfully:[/] "
+        print(
+            f"✓ System updated successfully: "
             f"Identity={info.identity}, IP={info.ip}, Mode={info.ip_mode}, "
             f"Watchdog={info.watchdog}, AllowFrom={info.allow_from_ip}/{info.allow_from_mask}, "
             f"AllowPorts={[p+1 for p in info.allow_from_ports]}, AllowVLAN={info.allow_from_vlan}"
         )
     except SwOSError as e:
-        console.print(f"[bold red]Failed to update system:[/] {e}")
+        print_err(f"Failed to update system: {e}")
         sys.exit(1)
 
 
@@ -922,12 +849,12 @@ def cmd_set_password(ctx: click.Context, old_password: str, new_password: str):
     if not old_password and client.password:
         old_password = client.password
 
-    console.print(f"[bold cyan]Updating administrator password on {client.host}...[/]")
+    print(f"Updating administrator password on {client.host}...")
     try:
         client.change_password(new_password=new_password, old_password=old_password)
-        console.print("[bold green]✓ Administrator password changed successfully.[/]")
+        print("✓ Administrator password changed successfully.")
     except Exception as e:
-        console.print(f"[bold red]Failed to change password:[/] {e}")
+        print_err(f"Failed to change password: {e}")
         sys.exit(1)
 
 
@@ -945,9 +872,9 @@ def cmd_set_snmp(ctx: click.Context, enable: Optional[bool], community: Optional
     try:
         client.set_snmp(enabled=enable, community=community, contact=contact, location=location)
         snmp = client.get_snmp()
-        console.print(f"[bold green]✓ SNMP updated successfully:[/] Enabled={snmp.enabled}, Community='{snmp.community}'")
+        print(f"✓ SNMP updated successfully: Enabled={snmp.enabled}, Community='{snmp.community}'")
     except SwOSError as e:
-        console.print(f"[bold red]Failed to update SNMP:[/] {e}")
+        print_err(f"Failed to update SNMP: {e}")
         sys.exit(1)
 
 
@@ -963,13 +890,13 @@ def cmd_add_vlan(ctx: click.Context, vlan_id: int, ports: str, ivl: bool, igmp: 
     """Add or update a static VLAN table entry."""
     client = get_client(ctx)
     port_indices = [int(p.strip()) - 1 for p in ports.split(",") if p.strip().isdigit()]
-    console.print(f"[bold cyan]Adding VLAN {vlan_id} with ports {[p+1 for p in port_indices]}...[/]")
+    print(f"Adding VLAN {vlan_id} with ports {[p+1 for p in port_indices]}...")
     try:
         client.add_vlan(vlan_id=vlan_id, ports=port_indices, ivl=ivl, igmp=igmp)
         vlans = client.get_vlans()
-        console.print(f"[bold green]✓ VLAN {vlan_id} configured successfully.[/] Total static VLANs: {len(vlans)}")
+        print(f"✓ VLAN {vlan_id} configured successfully. Total static VLANs: {len(vlans)}")
     except SwOSError as e:
-        console.print(f"[bold red]Failed to add VLAN:[/] {e}")
+        print_err(f"Failed to add VLAN: {e}")
         sys.exit(1)
 
 
@@ -979,12 +906,12 @@ def cmd_add_vlan(ctx: click.Context, vlan_id: int, ports: str, ivl: bool, igmp: 
 def cmd_del_vlan(ctx: click.Context, vlan_id: int):
     """Remove a static VLAN table entry."""
     client = get_client(ctx)
-    console.print(f"[bold cyan]Removing VLAN {vlan_id}...[/]")
+    print(f"Removing VLAN {vlan_id}...")
     try:
         client.delete_vlan(vlan_id)
-        console.print(f"[bold green]✓ VLAN {vlan_id} removed successfully.[/]")
+        print(f"✓ VLAN {vlan_id} removed successfully.")
     except SwOSError as e:
-        console.print(f"[bold red]Failed to remove VLAN:[/] {e}")
+        print_err(f"Failed to remove VLAN: {e}")
         sys.exit(1)
 
 
@@ -1000,14 +927,14 @@ def cmd_backup(ctx: click.Context, output_file: Optional[str]):
         ts = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
         output_file = f"swos-backup-{ts}.json"
 
-    console.print(f"[bold cyan]Exporting full configuration from {client.host}...[/]")
+    print(f"Exporting full configuration from {client.host}...")
     try:
         backup_dict = client.backup()
         with open(output_file, "w") as f:
             json.dump(backup_dict, f, indent=2)
-        console.print(f"[bold green]✓ Configuration successfully saved to:[/] {output_file} ({os.path.getsize(output_file)} bytes)")
+        print(f"✓ Configuration successfully saved to: {output_file} ({os.path.getsize(output_file)} bytes)")
     except Exception as e:
-        console.print(f"[bold red]Backup failed:[/] {e}")
+        print_err(f"Backup failed: {e}")
         sys.exit(1)
 
 
@@ -1019,23 +946,23 @@ def cmd_restore(ctx: click.Context, input_file: str, yes: bool):
     """Restore switch configuration state from a JSON backup file."""
     client = get_client(ctx)
     if not os.path.isfile(input_file):
-        console.print(f"[bold red]Error:[/] Backup file '{input_file}' not found.")
+        print_err(f"Backup file '{input_file}' not found.")
         sys.exit(1)
 
     if not yes:
         click.confirm(f"Are you sure you want to restore configuration from '{input_file}' to {client.host}?", abort=True)
 
-    console.print(f"[bold cyan]Restoring configuration to {client.host}...[/]")
+    print(f"Restoring configuration to {client.host}...")
     try:
         with open(input_file) as f:
             backup_dict = json.load(f)
         results = client.restore(backup_dict)
         for ep, ok in results.items():
-            status = "[green]OK[/]" if ok else "[red]FAILED[/]"
-            console.print(f"  {ep}: {status}")
-        console.print("[bold green]✓ Configuration restore completed.[/]")
+            status = "OK" if ok else "FAILED"
+            print(f"  {ep}: {status}")
+        print("✓ Configuration restore completed.")
     except Exception as e:
-        console.print(f"[bold red]Restore failed:[/] {e}")
+        print_err(f"Restore failed: {e}")
         sys.exit(1)
 
 
@@ -1050,12 +977,12 @@ def cmd_reboot(ctx: click.Context, yes: bool):
     if not yes:
         click.confirm(f"Are you sure you want to REBOOT switch at {client.host}?", abort=True)
 
-    console.print(f"[bold red]Sending reboot signal to {client.host}...[/]")
+    print(f"Sending reboot signal to {client.host}...")
     try:
         client.reboot()
-        console.print("[bold green]✓ Reboot initiated. The switch is restarting.[/]")
+        print("✓ Reboot initiated. The switch is restarting.")
     except Exception as e:
-        console.print(f"[bold red]Reboot failed:[/] {e}")
+        print_err(f"Reboot failed: {e}")
         sys.exit(1)
 
 
@@ -1077,7 +1004,7 @@ def cmd_raw_get(ctx: click.Context, endpoint: str):
         raw = client.get_raw(endpoint)
         print(raw)
     except Exception as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
 
@@ -1090,9 +1017,9 @@ def cmd_raw_post(ctx: click.Context, endpoint: str, payload: str):
     client = get_client(ctx)
     try:
         resp = client.post_raw(endpoint, payload)
-        console.print(f"[bold green]Response:[/] {resp}")
+        print(f"Response: {resp}")
     except Exception as e:
-        console.print(f"[bold red]Error:[/] {e}")
+        print_err(str(e))
         sys.exit(1)
 
 
@@ -1105,7 +1032,7 @@ def cmd_raw_post(ctx: click.Context, endpoint: str, payload: str):
 def cmd_monitor(ctx: click.Context, interval: float, once: bool):
     """Launch interactive real-time terminal dashboard (TUI)."""
     client = get_client(ctx)
-    run_monitor(client, interval=interval, once=once, console=console)
+    run_monitor(client, interval=interval, once=once)
 
 
 @cli.command("tui")
@@ -1115,7 +1042,7 @@ def cmd_monitor(ctx: click.Context, interval: float, once: bool):
 def cmd_tui(ctx: click.Context, interval: float, once: bool):
     """Alias for monitor command."""
     client = get_client(ctx)
-    run_monitor(client, interval=interval, once=once, console=console)
+    run_monitor(client, interval=interval, once=once)
 
 
 def main():
