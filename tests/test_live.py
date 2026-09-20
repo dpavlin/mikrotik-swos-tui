@@ -52,6 +52,11 @@ class TestSwOSLive(unittest.TestCase):
         self.assertTrue(snmp.enabled)
         self.assertEqual(snmp.community, "public")
 
+    def test_live_dashboard(self):
+        from mikrotik_swos.tui import generate_dashboard
+        dashboard = generate_dashboard(self.client)
+        self.assertIsNotNone(dashboard)
+
 
 if __name__ == "__main__":
     unittest.main()

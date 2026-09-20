@@ -83,6 +83,33 @@ class TestSwOSCLI(unittest.TestCase):
         self.assertIn("VLAN Mode", ports_res.output)
         self.assertIn("PoE Mode", ports_res.output)
 
+    def test_cli_monitor_once(self):
+        if not self.switch_reachable:
+            raise unittest.SkipTest("Switch at 192.168.88.1 is unreachable")
+        res = self.runner.invoke(cli, ["monitor", "--once"])
+        self.assertEqual(res.exit_code, 0)
+        self.assertIn("MikroTik SwOS Switch Monitor", res.output)
+        self.assertIn("Port Status & Traffic", res.output)
+        self.assertIn("Learned MAC Host Table", res.output)
+        self.assertNotIn("…", res.output)
+
+    def test_cli_monitor_default_non_tty(self):
+        if not self.switch_reachable:
+            raise unittest.SkipTest("Switch at 192.168.88.1 is unreachable")
+        res = self.runner.invoke(cli, ["monitor"])
+        self.assertEqual(res.exit_code, 0)
+        self.assertIn("MikroTik SwOS Switch Monitor", res.output)
+        self.assertIn("Port Status & Traffic", res.output)
+        self.assertNotIn("…", res.output)
+
+    def test_cli_tui_alias(self):
+        if not self.switch_reachable:
+            raise unittest.SkipTest("Switch at 192.168.88.1 is unreachable")
+        res = self.runner.invoke(cli, ["tui", "--once"])
+        self.assertEqual(res.exit_code, 0)
+        self.assertIn("MikroTik SwOS Switch Monitor", res.output)
+        self.assertNotIn("…", res.output)
+
 
 if __name__ == "__main__":
     unittest.main()
