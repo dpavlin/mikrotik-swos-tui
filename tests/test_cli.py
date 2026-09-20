@@ -69,6 +69,20 @@ class TestSwOSCLI(unittest.TestCase):
         self.assertEqual(res.exit_code, 0)
         self.assertIn("MAC Address Host Table", res.output)
 
+    def test_cli_table_untruncated(self):
+        if not self.switch_reachable:
+            raise unittest.SkipTest("Switch at 192.168.88.1 is unreachable")
+        for cmd_args in [["ports"], ["stats"], ["stats", "--errors"], ["hosts"], ["vlan"]]:
+            res = self.runner.invoke(cli, cmd_args)
+            self.assertEqual(res.exit_code, 0)
+            self.assertNotIn("…", res.output, f"Truncation detected in command: {cmd_args}")
+        # Specific header checks for ports
+        ports_res = self.runner.invoke(cli, ["ports"])
+        self.assertIn("AutoNeg", ports_res.output)
+        self.assertIn("FlowCtrl", ports_res.output)
+        self.assertIn("VLAN Mode", ports_res.output)
+        self.assertIn("PoE Mode", ports_res.output)
+
 
 if __name__ == "__main__":
     unittest.main()
