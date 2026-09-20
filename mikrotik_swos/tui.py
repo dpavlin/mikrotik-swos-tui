@@ -7,7 +7,11 @@ import sys
 import time
 from typing import Optional
 
-from rich.console import Console, Group
+from rich.console import Console
+try:
+    from rich.console import Group
+except ImportError:
+    from rich.console import RenderGroup as Group
 from rich.live import Live
 from rich.markup import escape
 from rich.panel import Panel
