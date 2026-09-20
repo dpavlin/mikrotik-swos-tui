@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from swos_name_upstream import (
     TopologyDiscovery,
+    format_swos_identity,
     inspect_swos_switch,
     normalize_mac,
     normalize_port_name,
@@ -13,6 +14,16 @@ from swos_name_upstream import (
 
 
 class TestNameUpstreamFunctions(unittest.TestCase):
+    def test_format_swos_identity(self):
+        self.assertEqual(format_swos_identity("131", "sw-a200"), "swos-131-sw-a200")
+        self.assertEqual(format_swos_identity("120", "sw-a117-cervantes"), "swos-120-a117")
+        self.assertEqual(format_swos_identity("117", "sw-b100-2"), "swos-117-b100-2")
+        self.assertEqual(format_swos_identity("121", "sw-dekanat"), "swos-121-dekanat")
+        self.assertEqual(format_swos_identity("115", "sw-fond-1"), "swos-115-fond-1")
+        # Ensure length is always <= 16
+        for octet, sw in [("131", "sw-a200"), ("120", "sw-a117-cervantes"), ("117", "sw-b100-2")]:
+            res = format_swos_identity(octet, sw)
+            self.assertLessEqual(len(res), 16)
     def test_normalize_mac(self):
         self.assertEqual(normalize_mac("CC2DE0F63622"), "cc:2d:e0:f6:36:22")
         self.assertEqual(normalize_mac("cc:2d:e0:f6:36:22"), "cc:2d:e0:f6:36:22")
@@ -164,7 +175,7 @@ class TestNameUpstreamFunctions(unittest.TestCase):
         self.assertEqual(info.uplink_name, "Port5")
         self.assertIn("DHost Max Learned", info.uplink_reason)
         self.assertEqual(info.upstream_switch, "sw-fond-1")
-        self.assertEqual(info.proposed_identity, "swos-115-sw-fond-1")
+        self.assertEqual(info.proposed_identity, "swos-115-fond-1")
 
 
 if __name__ == "__main__":

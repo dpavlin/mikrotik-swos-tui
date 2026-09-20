@@ -322,6 +322,30 @@ class SwOSSwitchInfo:
     error: Optional[str] = None
 
 
+def format_swos_identity(
+    octet: str, upstream: str, pattern: str = "swos-{octet}-{upstream}", max_len: int = 16
+) -> str:
+    """Format SwOS identity strictly respecting SwOS 16-character hardware limit."""
+    name = pattern.format(octet=octet, upstream=upstream)
+    if len(name) <= max_len:
+        return name
+
+    # 1. Strip 'sw-' prefix
+    upstream_short = upstream[3:] if upstream.startswith("sw-") else upstream
+    name = f"swos-{octet}-{upstream_short}"
+    if len(name) <= max_len:
+        return name
+
+    # 2. For multi-part names like 'a117-cervantes', use the location code 'a117'
+    parts = upstream_short.split("-")
+    if len(parts) > 1:
+        name_primary = f"swos-{octet}-{parts[0]}"
+        if len(name_primary) <= max_len:
+            return name_primary
+
+    return name[:max_len]
+
+
 def inspect_swos_switch(
     ip: str,
     discovery: TopologyDiscovery,
@@ -423,7 +447,7 @@ def inspect_swos_switch(
 
     if upstream_match:
         upstream_sw, upstream_port, upstream_cnt, _ = upstream_match
-        proposed_id = pattern.format(octet=octet, upstream=upstream_sw)
+        proposed_id = format_swos_identity(octet=octet, upstream=upstream_sw, pattern=pattern)
 
     info = SwOSSwitchInfo(
         ip=ip,
