@@ -102,11 +102,11 @@ def generate_dashboard(client: SwOSClient) -> Group:
     # 3. Dynamic MAC Address Table
     mac_table = Table(title=f"Learned MAC Host Table ({len(hosts)} entries)", expand=True, border_style="dim")
     mac_table.add_column("MAC Address", style="bold yellow", no_wrap=True)
-    mac_table.add_column("Port", style="cyan")
-    mac_table.add_column("VLAN ID", justify="right")
-    mac_table.add_column("Type", justify="center")
-    mac_table.add_column("Drop", justify="center")
-    mac_table.add_column("Mirror", justify="center")
+    mac_table.add_column("Port", style="cyan", no_wrap=True)
+    mac_table.add_column("VLAN ID", justify="right", no_wrap=True)
+    mac_table.add_column("Type", justify="center", no_wrap=True)
+    mac_table.add_column("Drop", justify="center", no_wrap=True)
+    mac_table.add_column("Mirror", justify="center", no_wrap=True)
 
     # Display up to 10 recent hosts
     for h in hosts[:12]:
@@ -125,9 +125,31 @@ def generate_dashboard(client: SwOSClient) -> Group:
     return Group(header_panel, ports_table, mac_table, footer)
 
 
-def run_monitor(client: SwOSClient, interval: float = 2.0) -> None:
-    """Run interactive terminal monitoring loop."""
-    console = Console(emoji=False)
+def run_monitor(
+    client: SwOSClient,
+    interval: float = 2.0,
+    once: bool = False,
+    console: Optional[Console] = None,
+) -> None:
+    """Run interactive terminal monitoring loop or render a single snapshot."""
+    if console is None:
+        try:
+            from mikrotik_swos.cli import console as default_console
+            console = default_console
+        except ImportError:
+            console = Console(emoji=False)
+
+    # When --once is passed or when stdout is not a TTY (piped to less, cat, file, test runner):
+    # render a single clean untruncated snapshot and return immediately.
+    if once or not sys.stdout.isatty():
+        try:
+            dashboard = generate_dashboard(client)
+            console.print(dashboard)
+            return
+        except SwOSError as e:
+            console.print(f"[bold red]Error connecting to switch:[/] {e}")
+            sys.exit(1)
+
     console.print(f"[bold cyan]Connecting to MikroTik SwOS at {client.host}...[/]")
     try:
         initial_layout = generate_dashboard(client)
@@ -135,7 +157,22 @@ def run_monitor(client: SwOSClient, interval: float = 2.0) -> None:
         console.print(f"[bold red]Error connecting to switch:[/] {e}")
         sys.exit(1)
 
-    with Live(initial_layout, console=console, refresh_per_second=2, screen=True) as live:
+    # In dumb terminals, Rich Live skips rendering completely.
+    # Provide a clean clear-and-print loop.
+    if console.is_dumb_terminal:
+        try:
+            while True:
+                sys.stdout.write("\033[H\033[2J")
+                sys.stdout.flush()
+                console.print(generate_dashboard(client))
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            pass
+        return
+
+    # In standard interactive terminals, use Live without alternate screen so the
+    # dashboard remains cleanly visible after Ctrl+C.
+    with Live(initial_layout, console=console, refresh_per_second=4, screen=False, transient=False) as live:
         try:
             while True:
                 time.sleep(interval)

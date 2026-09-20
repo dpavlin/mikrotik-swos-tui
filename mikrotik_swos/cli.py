@@ -11,7 +11,7 @@ from typing import Any, List, Optional
 import shutil
 
 import click
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markup import escape
 from rich.measure import Measurement
 from rich.panel import Panel
@@ -49,19 +49,19 @@ def measure_renderable(console: Console, obj: Any) -> int:
 
 
 class UntruncatedConsole(Console):
-    """Rich Console that ensures tables and panels are never truncated with ellipses.
+    """Rich Console that ensures tables, panels, and groups are never truncated with ellipses.
 
-    When printing a Table or Panel, if the required width exceeds the terminal or pipe width
+    When printing a Table, Panel, or Group, if the required width exceeds the terminal or pipe width
     (default 80 cols), a console sized to the content's natural width is used so that data
     is never truncated (allowing horizontal scrolling with `less -S` or full-width terminals).
     """
 
     def print(self, *objects: Any, **kwargs: Any) -> None:
-        has_table_or_panel = any(isinstance(obj, (Table, Panel)) for obj in objects)
-        if has_table_or_panel:
+        has_renderable = any(isinstance(obj, (Table, Panel, Group)) for obj in objects)
+        if has_renderable:
             max_w = 0
             for obj in objects:
-                if isinstance(obj, (Table, Panel)):
+                if isinstance(obj, (Table, Panel, Group)):
                     w = measure_renderable(self, obj)
                     if w > max_w:
                         max_w = w
@@ -1096,20 +1096,22 @@ def cmd_raw_post(ctx: click.Context, endpoint: str, payload: str):
 
 @cli.command("monitor")
 @click.option("--interval", "-i", default=2.0, type=float, help="Refresh interval in seconds [default: 2.0]")
+@click.option("--once", "-1", is_flag=True, help="Render a single snapshot and exit immediately")
 @click.pass_context
-def cmd_monitor(ctx: click.Context, interval: float):
+def cmd_monitor(ctx: click.Context, interval: float, once: bool):
     """Launch interactive real-time terminal dashboard (TUI)."""
     client = get_client(ctx)
-    run_monitor(client, interval=interval)
+    run_monitor(client, interval=interval, once=once, console=console)
 
 
 @cli.command("tui")
 @click.option("--interval", "-i", default=2.0, type=float, help="Refresh interval in seconds [default: 2.0]")
+@click.option("--once", "-1", is_flag=True, help="Render a single snapshot and exit immediately")
 @click.pass_context
-def cmd_tui(ctx: click.Context, interval: float):
+def cmd_tui(ctx: click.Context, interval: float, once: bool):
     """Alias for monitor command."""
     client = get_client(ctx)
-    run_monitor(client, interval=interval)
+    run_monitor(client, interval=interval, once=once, console=console)
 
 
 def main():
