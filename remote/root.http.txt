@@ -1,0 +1,4 @@
+HTTP/1.0 303 Use Instead
+Location: /index.html
+Content-Type: text/html
+

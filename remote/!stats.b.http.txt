@@ -1,0 +1,5 @@
+HTTP/1.0 401 Unauthorized
+WWW-Authenticate: Digest realm="CSS106-1G-4P-1S", qop="auth", nonce="8c81f7a5", stale=FALSE
+Content-Type: text/html
+
+<h1>401 Unauthorized</h1>
