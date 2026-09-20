@@ -354,9 +354,7 @@ def inspect_swos_switch(
     try:
         client = SwOSClient(ip, username=username, password=password, timeout=timeout)
         sys_data = client.get("sys.b")
-        rstp_data = client.get("rstp.b")
-        dhost_data = client.get("!dhost.b")
-        link_data = client.get("link.b")
+        upstream = client.detect_upstream_port()
     except SwOSConnectionError as ex:
         return SwOSSwitchInfo(
             ip=ip,
@@ -391,46 +389,10 @@ def inspect_swos_switch(
     board = decode_hex_str(sys_data.get("brd", ""))
     ver = decode_hex_str(sys_data.get("ver", ""))
 
-    # Port names from link.b
-    port_names = list(DEFAULT_PORT_NAMES)
-    raw_nm = link_data.get("nm", [])
-    for idx, hex_name in enumerate(raw_nm):
-        if idx < len(port_names) and hex_name:
-            decoded = decode_hex_str(hex_name)
-            if decoded:
-                port_names[idx] = decoded
-
-    # Uplink determination:
-    # Method 1: RSTP Root Port (role == 2)
-    roles = rstp_data.get("role", [])
-    uplink_idx = -1
-    uplink_reason = ""
-    for idx, role in enumerate(roles):
-        if role == 2:  # Root port
-            uplink_idx = idx
-            uplink_reason = f"RSTP Root Port (role=2)"
-            break
-
-    # Method 2: Fallback to highest host count from !dhost.b
-    port_hosts: Counter[int] = Counter()
-    for h in (dhost_data or []):
-        p = h.get("prt")
-        if p is not None:
-            port_hosts[p] += 1
-
-    if uplink_idx == -1:
-        if port_hosts:
-            best_port, count = port_hosts.most_common(1)[0]
-            uplink_idx = best_port
-            uplink_reason = f"DHost Max Learned ({count} MACs)"
-        else:
-            uplink_idx = 0
-            uplink_reason = "Default (Port 0)"
-    else:
-        root_hosts = port_hosts.get(uplink_idx, 0)
-        uplink_reason += f", learned {root_hosts} MACs"
-
-    uplink_name = port_names[uplink_idx] if 0 <= uplink_idx < len(port_names) else f"Port{uplink_idx+1}"
+    # Uplink determination via unified SwOSClient method
+    uplink_idx = upstream.index
+    uplink_name = upstream.name
+    uplink_reason = upstream.reason
 
     # Upstream switch identification via TopologyDiscovery
     upstream_match = discovery.find_upstream_switch(mac)

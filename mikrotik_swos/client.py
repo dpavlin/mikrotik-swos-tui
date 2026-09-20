@@ -256,7 +256,8 @@ class SwOSClient:
             ports = self.get_ports(detect_upstream=False)
 
         active_ports = [p for p in ports if p.link_up]
-        if not active_ports:
+        candidate_ports = active_ports if active_ports else list(ports)
+        if not candidate_ports:
             return UpstreamPortInfo(
                 index=-1,
                 name="None",
@@ -276,18 +277,18 @@ class SwOSClient:
         if rstp_data:
             roles = rstp_data.get("role", [])
             # In SwOS 802.1w: 0=Disabled, 1=Alternate/Backup, 2=Root port, 3=Designated
-            for p in active_ports:
+            for p in candidate_ports:
                 if p.index < len(roles) and roles[p.index] == 2:
                     return UpstreamPortInfo(
                         index=p.index,
                         name=p.name,
                         method="rstp",
-                        reason="RSTP Root Port",
+                        reason="RSTP Root Port (role=2)",
                         mac_count=0,
                     )
 
         # 2. Configured Port Name check
-        for p in active_ports:
+        for p in candidate_ports:
             nm = p.name.lower().strip()
             if nm.startswith("up:") or "uplink" in nm:
                 return UpstreamPortInfo(
@@ -307,17 +308,17 @@ class SwOSClient:
                 hosts = []
 
         mac_counts = Counter(h.port for h in hosts if h.port >= 0)
-        active_counts = [(p, mac_counts.get(p.index, 0)) for p in active_ports]
-        if active_counts:
-            active_counts.sort(key=lambda x: x[1], reverse=True)
-            best_port, max_count = active_counts[0]
+        candidate_counts = [(p, mac_counts.get(p.index, 0)) for p in candidate_ports]
+        if candidate_counts:
+            candidate_counts.sort(key=lambda x: x[1], reverse=True)
+            best_port, max_count = candidate_counts[0]
             if max_count > 0:
-                if len(active_counts) == 1 or max_count > active_counts[1][1]:
+                if len(candidate_counts) == 1 or max_count > candidate_counts[1][1]:
                     return UpstreamPortInfo(
                         index=best_port.index,
                         name=best_port.name,
                         method="dhost",
-                        reason=f"Learned dynamic MACs ({max_count} MACs)",
+                        reason=f"DHost Max Learned dynamic MACs ({max_count} MACs)",
                         mac_count=max_count,
                     )
                 else:
@@ -325,7 +326,7 @@ class SwOSClient:
                         index=best_port.index,
                         name=best_port.name,
                         method="dhost",
-                        reason=f"Learned dynamic MACs (tied, {max_count} MACs)",
+                        reason=f"DHost Max Learned dynamic MACs (tied, {max_count} MACs)",
                         mac_count=max_count,
                     )
 
@@ -341,12 +342,21 @@ class SwOSClient:
             )
 
         # 5. Lowest active link fallback
-        p = active_ports[0]
+        if active_ports:
+            p = active_ports[0]
+            return UpstreamPortInfo(
+                index=p.index,
+                name=p.name,
+                method="fallback",
+                reason="Lowest active port (fallback)",
+                mac_count=0,
+            )
+
         return UpstreamPortInfo(
-            index=p.index,
-            name=p.name,
-            method="fallback",
-            reason="Lowest active port (fallback)",
+            index=-1,
+            name="None",
+            method="none",
+            reason="No active links",
             mac_count=0,
         )
 

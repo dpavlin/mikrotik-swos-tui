@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from mikrotik_swos.client import SwOSClient
 from swos_name_upstream import (
     TopologyDiscovery,
     format_swos_identity,
@@ -103,11 +104,11 @@ class TestNameUpstreamFunctions(unittest.TestCase):
 
     @patch("swos_name_upstream.SwOSClient")
     def test_inspect_swos_switch_rstp_root(self, mock_client_cls):
-        mock_client = MagicMock()
+        mock_client = SwOSClient("192.168.88.131", "admin", "")
         mock_client_cls.return_value = mock_client
 
         # Mock sys.b, rstp.b, !dhost.b, link.b
-        mock_client.get.side_effect = lambda endpoint: {
+        mock_client.get = lambda endpoint: {
             "sys.b": {
                 "mac": "48a98a642d73",
                 "id": "4d696b726f54696b",  # MikroTik
@@ -124,6 +125,7 @@ class TestNameUpstreamFunctions(unittest.TestCase):
             "link.b": {
                 "nm": ["506f727431", "506f727432", "506f727433", "506f727434", "506f727435", "534650"],
             },
+            "fwd.b": {},
         }[endpoint]
 
         topo = MagicMock()
@@ -143,11 +145,11 @@ class TestNameUpstreamFunctions(unittest.TestCase):
 
     @patch("swos_name_upstream.SwOSClient")
     def test_inspect_swos_switch_dhost_fallback(self, mock_client_cls):
-        mock_client = MagicMock()
+        mock_client = SwOSClient("192.168.88.115", "admin", "")
         mock_client_cls.return_value = mock_client
 
         # If RSTP role is not set (e.g. all designated or disabled), fallback to max dhost
-        mock_client.get.side_effect = lambda endpoint: {
+        mock_client.get = lambda endpoint: {
             "sys.b": {
                 "mac": "c4ad34471323",
                 "id": "4d696b726f54696b",
@@ -165,6 +167,7 @@ class TestNameUpstreamFunctions(unittest.TestCase):
             "link.b": {
                 "nm": ["506f727431", "506f727432", "506f727433", "506f727434", "506f727435", "534650"],
             },
+            "fwd.b": {},
         }[endpoint]
 
         topo = MagicMock()
