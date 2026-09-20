@@ -86,7 +86,7 @@ class TopologyDiscovery:
         neighbors_file: Path = DEFAULT_NEIGHBORS,
         sw_ip_mac_file: Path = DEFAULT_SW_IP_MAC,
         trunk_regex_file: Path = DEFAULT_TRUNK_REGEX,
-        mac_threshold: int = 5,
+        mac_threshold: int = 10,
         debug: bool = False,
     ):
         self.fdb_dir = fdb_dir
@@ -159,10 +159,11 @@ class TopologyDiscovery:
                         # Check if remote name is an infrastructure switch
                         if remote_name.startswith("sw-") or remote_name == "sw-core":
                             remote_sw = self.resolve_switch_name(remote_name)
-                            self.inter_switch_links.add((local_sw, local_port))
-                            if remote_port:
-                                self.inter_switch_links.add((remote_sw, remote_port))
-                            self.switch_hierarchy.setdefault(local_sw, set()).add(remote_sw)
+                            if local_sw != remote_sw:
+                                self.inter_switch_links.add((local_sw, local_port))
+                                if remote_port:
+                                    self.inter_switch_links.add((remote_sw, remote_port))
+                                self.switch_hierarchy.setdefault(local_sw, set()).add(remote_sw)
                         elif len(parts) >= 3:
                             # Check if parts[2] is a learned neighbor MAC
                             n_mac = normalize_mac(parts[2])
@@ -613,7 +614,7 @@ def refresh_dell_fdb(debug: bool = False) -> None:
 @click.option("--update-inventory", is_flag=True, help="Update comments in m-swos-ip-mac with switch identities.")
 @click.option("--pattern", type=str, default="swos-{octet}-{upstream}", help="Naming template pattern (default: swos-{octet}-{upstream}).")
 @click.option("--refresh-fdb", is_flag=True, help="Run parallel SNMP walk to update /dev/shm/snmp-mac-port before discovery.")
-@click.option("--mac-threshold", type=int, default=5, help="Maximum learned MAC count for access port qualification (default: 5).")
+@click.option("--mac-threshold", type=int, default=10, help="Maximum learned MAC count for access port qualification (default: 10).")
 @click.option("--username", type=str, default="admin", help="SwOS administrative username.")
 @click.option("--password", type=str, default="", help="SwOS administrative password.")
 @click.option("--timeout", type=float, default=2.0, help="HTTP connection timeout in seconds.")
