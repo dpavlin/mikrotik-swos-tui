@@ -8,9 +8,12 @@ import os
 import sys
 from typing import Any, List, Optional
 
+import shutil
+
 import click
 from rich.console import Console
 from rich.markup import escape
+from rich.measure import Measurement
 from rich.panel import Panel
 from rich.table import Table
 
@@ -18,7 +21,45 @@ from mikrotik_swos.client import SwOSAuthError, SwOSClient, SwOSConnectionError,
 from mikrotik_swos.codec import bitmask_to_ports, decode_hex_str, decode_ip, decode_mac, ports_to_bitmask
 from mikrotik_swos.tui import run_monitor
 
-console = Console(emoji=False)
+
+class UntruncatedConsole(Console):
+    """Rich Console that ensures tables and panels are never truncated with ellipses.
+
+    When printing a Table or Panel, if the required width exceeds the terminal or pipe width
+    (default 80 cols), a console sized to the content's natural width is used so that data
+    is never truncated (allowing horizontal scrolling with `less -S` or full-width terminals).
+    """
+
+    def print(self, *objects: Any, **kwargs: Any) -> None:
+        has_table_or_panel = any(isinstance(obj, (Table, Panel)) for obj in objects)
+        if has_table_or_panel:
+            max_w = 0
+            for obj in objects:
+                if isinstance(obj, (Table, Panel)):
+                    m = Measurement.get(self, self.options.update_width(10000), obj)
+                    if m.maximum > max_w:
+                        max_w = m.maximum
+            try:
+                term_w = shutil.get_terminal_size().columns
+            except Exception:
+                term_w = 80
+            target_w = max(term_w, max_w)
+            wide_console = Console(
+                file=self._file,
+                stderr=self.stderr,
+                width=target_w,
+                height=1000,
+                emoji=self._emoji,
+                color_system=self.color_system,
+                no_color=self.no_color,
+                soft_wrap=self.soft_wrap,
+            )
+            wide_console.print(*objects, **kwargs)
+        else:
+            super().print(*objects, **kwargs)
+
+
+console = UntruncatedConsole(emoji=False)
 
 
 def get_client(ctx: click.Context) -> SwOSClient:
@@ -90,8 +131,8 @@ def cmd_system(ctx: click.Context):
 
     def render():
         table = Table(title=f"System Information: {info.identity} ({info.board})", border_style="blue")
-        table.add_column("Property", style="bold cyan")
-        table.add_column("Value", style="white")
+        table.add_column("Property", style="bold cyan", no_wrap=True)
+        table.add_column("Value", style="white", no_wrap=True)
 
         table.add_row("Identity", info.identity)
         table.add_row("Board Model", info.board)
@@ -237,16 +278,16 @@ def cmd_stats(ctx: click.Context, errors: bool, packets: bool):
     def render():
         if errors:
             table = Table(title="Port Error Counters", border_style="red")
-            table.add_column("Port", style="bold cyan")
-            table.add_column("Rx Errors", justify="right")
-            table.add_column("Tx Errors", justify="right")
-            table.add_column("Rx FCS", justify="right")
-            table.add_column("Rx Align", justify="right")
-            table.add_column("Rx Runts", justify="right")
-            table.add_column("Rx Frag", justify="right")
-            table.add_column("Rx TooLong", justify="right")
-            table.add_column("Tx Collis", justify="right")
-            table.add_column("Tx Underrun", justify="right")
+            table.add_column("Port", style="bold cyan", no_wrap=True)
+            table.add_column("Rx Errors", justify="right", no_wrap=True)
+            table.add_column("Tx Errors", justify="right", no_wrap=True)
+            table.add_column("Rx FCS", justify="right", no_wrap=True)
+            table.add_column("Rx Align", justify="right", no_wrap=True)
+            table.add_column("Rx Runts", justify="right", no_wrap=True)
+            table.add_column("Rx Frag", justify="right", no_wrap=True)
+            table.add_column("Rx TooLong", justify="right", no_wrap=True)
+            table.add_column("Tx Collis", justify="right", no_wrap=True)
+            table.add_column("Tx Underrun", justify="right", no_wrap=True)
 
             for s in stats:
                 table.add_row(
@@ -265,17 +306,17 @@ def cmd_stats(ctx: click.Context, errors: bool, packets: bool):
         else:
             table = Table(title="Port Traffic Counters", border_style="green")
             table.add_column("Port", style="bold cyan", no_wrap=True)
-            table.add_column("Rx Rate", justify="right", style="bright_cyan")
-            table.add_column("Tx Rate", justify="right", style="bright_green")
-            table.add_column("Rx Bytes", justify="right")
-            table.add_column("Tx Bytes", justify="right")
-            table.add_column("Rx Packets", justify="right")
-            table.add_column("Tx Packets", justify="right")
-            table.add_column("Rx Ucast", justify="right")
-            table.add_column("Tx Ucast", justify="right")
-            table.add_column("Rx Bcast", justify="right")
-            table.add_column("Tx Bcast", justify="right")
-            table.add_column("Errors (Rx/Tx)", justify="center")
+            table.add_column("Rx Rate", justify="right", style="bright_cyan", no_wrap=True)
+            table.add_column("Tx Rate", justify="right", style="bright_green", no_wrap=True)
+            table.add_column("Rx Bytes", justify="right", no_wrap=True)
+            table.add_column("Tx Bytes", justify="right", no_wrap=True)
+            table.add_column("Rx Packets", justify="right", no_wrap=True)
+            table.add_column("Tx Packets", justify="right", no_wrap=True)
+            table.add_column("Rx Ucast", justify="right", no_wrap=True)
+            table.add_column("Tx Ucast", justify="right", no_wrap=True)
+            table.add_column("Rx Bcast", justify="right", no_wrap=True)
+            table.add_column("Tx Bcast", justify="right", no_wrap=True)
+            table.add_column("Errors (Rx/Tx)", justify="center", no_wrap=True)
 
             for s in stats:
                 err_str = f"{s.rx_errors}/{s.tx_errors}"
@@ -400,11 +441,11 @@ def cmd_vlan(ctx: click.Context):
 
     def render():
         p_table = Table(title="Per-Port VLAN Modes", border_style="cyan")
-        p_table.add_column("Port", style="bold cyan")
-        p_table.add_column("PVID (Default VID)", justify="right")
-        p_table.add_column("VLAN Mode", justify="center")
-        p_table.add_column("VLAN Receive", justify="center")
-        p_table.add_column("VLAN Header", justify="center")
+        p_table.add_column("Port", style="bold cyan", no_wrap=True)
+        p_table.add_column("PVID (Default VID)", justify="right", no_wrap=True)
+        p_table.add_column("VLAN Mode", justify="center", no_wrap=True)
+        p_table.add_column("VLAN Receive", justify="center", no_wrap=True)
+        p_table.add_column("VLAN Header", justify="center", no_wrap=True)
 
         for p in ports:
             p_table.add_row(
@@ -417,10 +458,10 @@ def cmd_vlan(ctx: click.Context):
         console.print(p_table)
 
         v_table = Table(title=f"Static VLAN Table ({len(vlans)} entries)", border_style="magenta")
-        v_table.add_column("VLAN ID", justify="right", style="bold magenta")
-        v_table.add_column("IVL", justify="center")
-        v_table.add_column("IGMP Snooping", justify="center")
-        v_table.add_column("Member Ports", style="white")
+        v_table.add_column("VLAN ID", justify="right", style="bold magenta", no_wrap=True)
+        v_table.add_column("IVL", justify="center", no_wrap=True)
+        v_table.add_column("IGMP Snooping", justify="center", no_wrap=True)
+        v_table.add_column("Member Ports", style="white", no_wrap=True)
 
         if not vlans:
             v_table.add_row("None", "-", "-", "No static VLANs defined")
@@ -470,8 +511,8 @@ def cmd_fwd(ctx: click.Context):
 
     def render():
         table = Table(title="Port Forwarding Isolation Matrix", border_style="blue")
-        table.add_column("Ingress Port", style="bold cyan")
-        table.add_column("Can Forward To Ports", style="white")
+        table.add_column("Ingress Port", style="bold cyan", no_wrap=True)
+        table.add_column("Can Forward To Ports", style="white", no_wrap=True)
 
         for src, dsts in matrix.items():
             table.add_row(src, ", ".join(dsts) if dsts else "[dim]Isolated[/]")
@@ -483,8 +524,8 @@ def cmd_fwd(ctx: click.Context):
         omr_ports = [names[p] for p in bitmask_to_ports(fwd.get("omr", 0), len(names))]
 
         m_table = Table(title="Port Mirroring", border_style="yellow")
-        m_table.add_column("Parameter", style="bold yellow")
-        m_table.add_column("Value", style="white")
+        m_table.add_column("Parameter", style="bold yellow", no_wrap=True)
+        m_table.add_column("Value", style="white", no_wrap=True)
         m_table.add_row("Mirror Target Port", target_name)
         m_table.add_row("Mirror Ingress From", ", ".join(imr_ports) if imr_ports else "None")
         m_table.add_row("Mirror Egress From", ", ".join(omr_ports) if omr_ports else "None")
@@ -549,13 +590,13 @@ def cmd_rstp(ctx: click.Context):
         ))
 
         table = Table(title="RSTP Per-Port Status", border_style="cyan")
-        table.add_column("Port", style="bold cyan")
-        table.add_column("RSTP", justify="center")
-        table.add_column("Role", justify="center")
-        table.add_column("Path Cost", justify="right")
-        table.add_column("Root Path Cost", justify="right")
-        table.add_column("P2P", justify="center")
-        table.add_column("Edge", justify="center")
+        table.add_column("Port", style="bold cyan", no_wrap=True)
+        table.add_column("RSTP", justify="center", no_wrap=True)
+        table.add_column("Role", justify="center", no_wrap=True)
+        table.add_column("Path Cost", justify="right", no_wrap=True)
+        table.add_column("Root Path Cost", justify="right", no_wrap=True)
+        table.add_column("P2P", justify="center", no_wrap=True)
+        table.add_column("Edge", justify="center", no_wrap=True)
 
         for p in data["ports"]:
             table.add_row(
@@ -602,8 +643,8 @@ def cmd_sfp(ctx: click.Context):
 
     def render():
         table = Table(title="SFP Optical Transceiver Information", border_style="green")
-        table.add_column("Parameter", style="bold green")
-        table.add_column("Value", style="white")
+        table.add_column("Parameter", style="bold green", no_wrap=True)
+        table.add_column("Value", style="white", no_wrap=True)
 
         if not sfp.present:
             table.add_row("Module Status", "[dim]No SFP transceiver detected / Module not present[/]")
@@ -651,8 +692,8 @@ def cmd_snmp(ctx: click.Context):
 
     def render():
         table = Table(title="SNMP Configuration", border_style="blue")
-        table.add_column("Setting", style="bold cyan")
-        table.add_column("Value", style="white")
+        table.add_column("Setting", style="bold cyan", no_wrap=True)
+        table.add_column("Value", style="white", no_wrap=True)
         table.add_row("SNMP Service", "[green]Enabled[/]" if snmp.enabled else "[dim]Disabled[/]")
         table.add_row("Community", snmp.community)
         table.add_row("Contact Info", snmp.contact or "[dim]Not set[/]")
@@ -677,11 +718,11 @@ def cmd_acl(ctx: click.Context):
 
     def render():
         table = Table(title=f"Access Control List Rules ({len(rules)} rules)", border_style="magenta")
-        table.add_column("#", justify="right", style="bold magenta")
-        table.add_column("From", justify="center")
-        table.add_column("MAC Match", style="white")
-        table.add_column("IP Match", style="white")
-        table.add_column("Action", style="yellow")
+        table.add_column("#", justify="right", style="bold magenta", no_wrap=True)
+        table.add_column("From", justify="center", no_wrap=True)
+        table.add_column("MAC Match", style="white", no_wrap=True)
+        table.add_column("IP Match", style="white", no_wrap=True)
+        table.add_column("Action", style="yellow", no_wrap=True)
 
         if not rules:
             table.add_row("-", "-", "No ACL rules configured", "-", "-")
