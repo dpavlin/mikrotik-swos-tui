@@ -7,6 +7,11 @@ from mikrotik_swos.cli import cli
 
 
 class TestSwOSCLI(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from tests.test_live import is_switch_reachable
+        cls.switch_reachable = is_switch_reachable()
+
     def setUp(self):
         self.runner = CliRunner()
 
@@ -21,6 +26,8 @@ class TestSwOSCLI(unittest.TestCase):
         self.assertIn("vlan", res.output)
 
     def test_cli_system(self):
+        if not self.switch_reachable:
+            raise unittest.SkipTest("Switch at 192.168.88.1 is unreachable")
         res = self.runner.invoke(cli, ["system"])
         self.assertEqual(res.exit_code, 0)
         self.assertIn("MikroTik", res.output)
@@ -28,12 +35,16 @@ class TestSwOSCLI(unittest.TestCase):
         self.assertIn("cc:2d:e0:f6:37:84", res.output)
 
     def test_cli_system_json(self):
+        if not self.switch_reachable:
+            raise unittest.SkipTest("Switch at 192.168.88.1 is unreachable")
         res = self.runner.invoke(cli, ["--json", "system"])
         self.assertEqual(res.exit_code, 0)
         self.assertIn('"identity": "MikroTik"', res.output)
         self.assertIn('"mac": "cc:2d:e0:f6:37:84"', res.output)
 
     def test_cli_ports(self):
+        if not self.switch_reachable:
+            raise unittest.SkipTest("Switch at 192.168.88.1 is unreachable")
         res = self.runner.invoke(cli, ["ports"])
         self.assertEqual(res.exit_code, 0)
         self.assertIn("SFP", res.output)
@@ -42,6 +53,8 @@ class TestSwOSCLI(unittest.TestCase):
         self.assertIn('"name": "Port1"', json_res.output)
 
     def test_cli_stats(self):
+        if not self.switch_reachable:
+            raise unittest.SkipTest("Switch at 192.168.88.1 is unreachable")
         res = self.runner.invoke(cli, ["stats"])
         self.assertEqual(res.exit_code, 0)
         self.assertIn("SFP", res.output)
@@ -50,6 +63,8 @@ class TestSwOSCLI(unittest.TestCase):
         self.assertIn('"name": "Port1"', json_res.output)
 
     def test_cli_hosts(self):
+        if not self.switch_reachable:
+            raise unittest.SkipTest("Switch at 192.168.88.1 is unreachable")
         res = self.runner.invoke(cli, ["hosts"])
         self.assertEqual(res.exit_code, 0)
         self.assertIn("MAC Address Host Table", res.output)
