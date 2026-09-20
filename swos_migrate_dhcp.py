@@ -22,18 +22,15 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 import click
-from rich.console import Console
-from rich.table import Table
 
 # Add repository root to path
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from mikrotik_swos.cli import console, format_table
 from mikrotik_swos.client import SwOSClient, SwOSConnectionError, SwOSError
 from mikrotik_swos.models import SystemInfo
-
-console = Console(emoji=False)
 
 
 @dataclass
@@ -385,17 +382,9 @@ def cli(
         alloc_base = int(new_ip.split(".")[3]) + 1
 
     # Render plan table
-    table = Table(title=f"Discovered Switches on DHCP ({len(candidates)} total)")
-    table.add_column("Old DHCP IP", style="cyan")
-    table.add_column("Target Static IP", style="bold green")
-    table.add_column("MAC Address", style="yellow")
-    table.add_column("Model", style="white")
-    table.add_column("Firmware", style="white")
-    table.add_column("Serial", style="dim")
-    table.add_column("Uptime", style="dim")
-
-    for cand in candidates:
-        table.add_row(
+    headers = ["Old DHCP IP", "Target Static IP", "MAC Address", "Model", "Firmware", "Serial", "Uptime"]
+    rows = [
+        [
             cand.old_ip,
             cand.new_ip or "N/A",
             cand.mac,
@@ -403,9 +392,11 @@ def cli(
             cand.firmware,
             cand.serial,
             cand.uptime,
-        )
-
-    console.print(table)
+        ]
+        for cand in candidates
+    ]
+    print(f"\nDiscovered Switches on DHCP ({len(candidates)} total):")
+    print(format_table(headers, rows))
 
     # 4. Check if dry-run
     if dry_run or not apply_changes:

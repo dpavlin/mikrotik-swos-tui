@@ -25,22 +25,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import click
-from rich.console import Console
-from rich.table import Table
 
 # Add repository root to path
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from mikrotik_swos.cli import console, format_table
 from mikrotik_swos.client import SwOSClient, SwOSConnectionError, SwOSError
 from mikrotik_swos.codec import decode_hex_str, encode_hex_str
-
-try:
-    _term_width = os.get_terminal_size().columns if sys.stdout.isatty() else 200
-except OSError:
-    _term_width = 200
-console = Console(emoji=False, width=max(180, _term_width))
 
 DEFAULT_INVENTORY = Path.home() / "m-swos" / "m-swos-ip-mac"
 FALLBACK_INVENTORY = Path("/home/dpavlin/m-swos/m-swos-ip-mac")
@@ -713,39 +706,26 @@ def main(
             results.append(info)
 
     # Render Report Table
-    table = Table(
-        title="SwOS Fleet Uplink & Upstream Switch Renaming",
-        show_header=True,
-        header_style="bold magenta",
-        title_style="bold white on blue",
-    )
-    table.add_column("Switch IP", style="cyan", no_wrap=True)
-    table.add_column("MAC Address", style="dim", no_wrap=True)
-    table.add_column("Uplink Port", style="blue", no_wrap=True)
-    table.add_column("Current Identity", style="white", no_wrap=True)
-    table.add_column("Upstream Switch", style="green", no_wrap=True)
-    table.add_column("Port", justify="right", style="yellow", no_wrap=True)
-    table.add_column("Proposed Identity", style="bold yellow", no_wrap=True)
-    table.add_column("Status", style="bold", no_wrap=True)
-
+    headers = [
+        "Switch IP",
+        "MAC Address",
+        "Uplink Port",
+        "Current Identity",
+        "Upstream Switch",
+        "Port",
+        "Proposed Identity",
+        "Status",
+    ]
+    aligns = ["<", "<", "<", "<", "<", ">", "<", "<"]
+    rows = []
     for r in results:
-        status_color = {
-            "RENAMED": "[green]RENAMED[/green]",
-            "PROPOSED": "[cyan]PROPOSED[/cyan]",
-            "ALREADY_NAMED": "[dim green]ALREADY_NAMED[/dim green]",
-            "UPSTREAM_UNRESOLVED": "[yellow]UNRESOLVED[/yellow]",
-            "UNREACHABLE": "[red]UNREACHABLE[/red]",
-            "ERROR": "[red]ERROR[/red]",
-            "FAILED": "[bold red]FAILED[/bold red]",
-        }.get(r.status, r.status)
-
         if r.uplink_name:
             method_tag = "RSTP" if "RSTP" in r.uplink_reason else "DHost"
-            uplink_str = f"{r.uplink_name} [dim]({method_tag})[/dim]"
+            uplink_str = f"{r.uplink_name} ({method_tag})"
         else:
             uplink_str = "-"
 
-        table.add_row(
+        rows.append([
             r.ip,
             r.mac or "-",
             uplink_str,
@@ -753,12 +733,12 @@ def main(
             r.upstream_switch or "-",
             str(r.upstream_port) if r.upstream_port is not None else "-",
             r.proposed_identity or "-",
-            status_color,
-        )
+            r.status,
+        ])
 
-    console.print()
-    console.print(table)
-    console.print()
+    print("\nSwOS Fleet Uplink & Upstream Switch Renaming:")
+    print(format_table(headers, rows, aligns))
+    print()
 
     # Summary Statistics
     total = len(results)
