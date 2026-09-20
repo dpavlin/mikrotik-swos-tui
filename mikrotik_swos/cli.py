@@ -22,6 +22,32 @@ from mikrotik_swos.codec import bitmask_to_ports, decode_hex_str, decode_ip, dec
 from mikrotik_swos.tui import run_monitor
 
 
+def measure_renderable(console: Console, obj: Any) -> int:
+    """Measure the natural maximum width of a renderable across Rich versions."""
+    try:
+        # Modern Rich: Measurement.get(console, options, renderable)
+        m = Measurement.get(console, console.options.update_width(10000), obj)
+        return m.maximum
+    except (TypeError, ValueError, AttributeError):
+        pass
+    try:
+        # Older Rich (e.g. Debian packages): Measurement.get(console, renderable, max_width=10000)
+        m = Measurement.get(console, obj, 10000)
+        return m.maximum
+    except (TypeError, ValueError, AttributeError):
+        pass
+    try:
+        fn = getattr(obj, "__rich_measure__", None)
+        if callable(fn):
+            try:
+                return fn(console, console.options.update_width(10000)).maximum
+            except TypeError:
+                return fn(console, 10000).maximum
+    except Exception:
+        pass
+    return 80
+
+
 class UntruncatedConsole(Console):
     """Rich Console that ensures tables and panels are never truncated with ellipses.
 
@@ -36,9 +62,9 @@ class UntruncatedConsole(Console):
             max_w = 0
             for obj in objects:
                 if isinstance(obj, (Table, Panel)):
-                    m = Measurement.get(self, self.options.update_width(10000), obj)
-                    if m.maximum > max_w:
-                        max_w = m.maximum
+                    w = measure_renderable(self, obj)
+                    if w > max_w:
+                        max_w = w
             try:
                 term_w = shutil.get_terminal_size().columns
             except Exception:
