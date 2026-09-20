@@ -11,7 +11,11 @@ from typing import Any, List, Optional
 import shutil
 
 import click
-from rich.console import Console, Group
+from rich.console import Console
+try:
+    from rich.console import Group
+except ImportError:
+    from rich.console import RenderGroup as Group  # type: ignore
 from rich.markup import escape
 from rich.measure import Measurement
 from rich.panel import Panel
