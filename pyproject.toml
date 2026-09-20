@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mikrotik-swos-tui"
+version = "0.1.0"
+description = "Command-line and TUI administration tool for MikroTik switches running SwitchOS (SwOS)"
+readme = "README.md"
+authors = [{ name = "Dobrica Pavlinusic", email = "dpavlin@rot13.org" }]
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.0.0",
+    "requests>=2.28.0",
+    "rich>=13.0.0",
+    "textual>=0.40.0",
+]
+
+[project.scripts]
+swos = "mikrotik_swos.cli:main"
