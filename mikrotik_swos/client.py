@@ -175,9 +175,14 @@ class SwOSClient:
         if ip_mode is not None:
             updates["iptp"] = ip_mode
 
-        current.update(updates)
-        self.post("sys.b", current)
-        return current
+        writable_keys = [
+            "iptp", "sip", "id", "alla", "allm", "allp", "avln",
+            "prio", "cost", "wdt", "dsc", "ivl", "igmp", "lcbl",
+        ]
+        payload = {k: current[k] for k in writable_keys if k in current}
+        payload.update(updates)
+        self.post("sys.b", payload)
+        return payload
 
     def get_ports(self) -> List[PortInfo]:
         """Fetch port status, link parameters, and PoE information."""
