@@ -178,7 +178,7 @@ def cmd_ports(ctx: click.Context):
     """Display port status, link parameters, and PoE settings."""
     client = get_client(ctx)
     try:
-        ports = client.get_ports()
+        ports = client.get_ports(detect_upstream=True)
     except SwOSError as e:
         print_err(str(e))
         sys.exit(1)
@@ -188,6 +188,8 @@ def cmd_ports(ctx: click.Context):
             "index": p.index,
             "port": p.index + 1,
             "name": p.name,
+            "is_upstream": p.is_upstream,
+            "upstream_reason": p.upstream_reason,
             "enabled": p.enabled,
             "link": p.link_up,
             "speed": p.speed,
@@ -205,10 +207,11 @@ def cmd_ports(ctx: click.Context):
     ]
 
     def render():
-        headers = ["#", "Name", "State", "Link", "Speed", "Duplex", "AutoNeg", "FlowCtrl", "PVID", "VLAN Mode", "PoE Mode", "PoE W"]
-        aligns = [">", "<", "<", "<", "<", "<", "<", "<", ">", "<", "<", ">"]
+        headers = ["#", "Name", "Upstream", "State", "Link", "Speed", "Duplex", "AutoNeg", "FlowCtrl", "PVID", "VLAN Mode", "PoE Mode", "PoE W"]
+        aligns = [">", "<", "<", "<", "<", "<", "<", "<", "<", ">", "<", "<", ">"]
         rows = []
         for p in ports:
+            up_str = "yes" if p.is_upstream else "-"
             state_str = "Enabled" if p.enabled else "Disabled"
             link_str = "UP" if p.link_up else "DOWN"
             speed_str = p.speed if p.link_up else "-"
@@ -219,6 +222,7 @@ def cmd_ports(ctx: click.Context):
             rows.append([
                 str(p.index + 1),
                 p.name,
+                up_str,
                 state_str,
                 link_str,
                 speed_str,
@@ -230,7 +234,11 @@ def cmd_ports(ctx: click.Context):
                 p.poe_mode,
                 pwr_str,
             ])
-        print("SwOS Port Overview:")
+        up_port = next((p for p in ports if p.is_upstream), None)
+        if up_port:
+            print(f"SwOS Port Overview [Upstream: {up_port.name} ({up_port.upstream_reason})]:")
+        else:
+            print("SwOS Port Overview:")
         print(format_table(headers, rows, aligns))
 
     output_data(ctx, data, render)

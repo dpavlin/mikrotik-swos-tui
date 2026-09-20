@@ -48,9 +48,12 @@ class TestSwOSCLI(unittest.TestCase):
         res = self.runner.invoke(cli, ["ports"])
         self.assertEqual(res.exit_code, 0)
         self.assertIn("SFP", res.output)
+        self.assertIn("Upstream", res.output)
+        self.assertIn("Port1", res.output)
         json_res = self.runner.invoke(cli, ["--json", "ports"])
         self.assertEqual(json_res.exit_code, 0)
         self.assertIn('"name": "Port1"', json_res.output)
+        self.assertIn('"is_upstream": true', json_res.output)
 
     def test_cli_stats(self):
         if not self.switch_reachable:
@@ -78,6 +81,7 @@ class TestSwOSCLI(unittest.TestCase):
             self.assertNotIn("…", res.output, f"Truncation detected in command: {cmd_args}")
         # Specific header checks for ports
         ports_res = self.runner.invoke(cli, ["ports"])
+        self.assertIn("Upstream", ports_res.output)
         self.assertIn("AutoNeg", ports_res.output)
         self.assertIn("FlowCtrl", ports_res.output)
         self.assertIn("VLAN Mode", ports_res.output)
@@ -89,6 +93,8 @@ class TestSwOSCLI(unittest.TestCase):
         res = self.runner.invoke(cli, ["monitor", "--once"])
         self.assertEqual(res.exit_code, 0)
         self.assertIn("MikroTik SwOS Switch Monitor", res.output)
+        self.assertIn("Upstream: Port1", res.output)
+        self.assertIn("UPSTREAM", res.output)
         self.assertIn("Port Status & Traffic", res.output)
         self.assertIn("Learned MAC Host Table", res.output)
         self.assertNotIn("…", res.output)

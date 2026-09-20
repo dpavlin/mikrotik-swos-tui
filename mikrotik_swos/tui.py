@@ -13,24 +13,27 @@ from mikrotik_swos.client import SwOSClient, SwOSError
 def generate_dashboard(client: SwOSClient) -> str:
     """Fetch live data from client and format a fixed-width, jitter-free dashboard string."""
     sys_info = client.get_system()
-    ports = client.get_ports()
+    ports = client.get_ports(detect_upstream=False)
     stats = client.get_stats()
     hosts = client.get_hosts(dynamic=True, static=False)
+    upstream = client.detect_upstream_port(ports=ports, hosts=hosts)
 
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     lines = []
     lines.append(f"=== MikroTik SwOS Switch Monitor: {sys_info.identity} ({sys_info.board}) {sys_info.ip} [{sys_info.mac}] ===")
-    lines.append(f"SwOS: {sys_info.version} | Serial: {sys_info.serial} | Uptime: {sys_info.uptime_str} | {now_str}")
+    up_desc = f"{upstream.name} ({upstream.reason})" if upstream.index >= 0 else "None"
+    lines.append(f"SwOS: {sys_info.version} | Serial: {sys_info.serial} | Uptime: {sys_info.uptime_str} | Upstream: {up_desc} | {now_str}")
     lines.append("")
 
     # 1. Ports Section
     lines.append("Port Status & Traffic:")
-    p_hdr = f"{'PORT':<12} {'LINK':<6} {'SPEED':<8} {'PVID':>5} {'POE':<10} {'RX RATE':>11} {'TX RATE':>11} {'RX TOTAL':>11} {'TX TOTAL':>11} {'ERR (R/T)':>10}"
+    p_hdr = f"{'PORT':<12} {'UPSTREAM':<9} {'LINK':<6} {'SPEED':<8} {'PVID':>5} {'POE':<10} {'RX RATE':>11} {'TX RATE':>11} {'RX TOTAL':>11} {'TX TOTAL':>11} {'ERR (R/T)':>10}"
     lines.append(p_hdr)
     lines.append("-" * len(p_hdr))
 
     for i, p in enumerate(ports):
         st = stats[i] if i < len(stats) else None
+        up_str = "yes" if p.index == upstream.index else "-"
         link_str = "UP" if p.link_up else "DOWN"
         speed_str = f"{p.speed} {p.duplex[0]}" if p.link_up else "-"
         poe_str = p.poe_mode
@@ -43,7 +46,7 @@ def generate_dashboard(client: SwOSClient) -> str:
         err_str = f"{st.rx_errors}/{st.tx_errors}" if st else "0/0"
 
         port_label = f"{p.name} (#{p.index+1})"
-        row = f"{port_label:<12} {link_str:<6} {speed_str:<8} {p.default_vlan_id:>5} {poe_str:<10} {rx_rate:>11} {tx_rate:>11} {rx_bytes:>11} {tx_bytes:>11} {err_str:>10}"
+        row = f"{port_label:<12} {up_str:<9} {link_str:<6} {speed_str:<8} {p.default_vlan_id:>5} {poe_str:<10} {rx_rate:>11} {tx_rate:>11} {rx_bytes:>11} {tx_bytes:>11} {err_str:>10}"
         lines.append(row)
 
     lines.append("-" * len(p_hdr))

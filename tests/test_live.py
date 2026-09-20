@@ -32,11 +32,21 @@ class TestSwOSLive(unittest.TestCase):
         self.assertGreater(info.uptime_centisec, 0)
 
     def test_live_ports(self):
-        ports = self.client.get_ports()
+        ports = self.client.get_ports(detect_upstream=True)
         self.assertEqual(len(ports), 6)
         p1 = ports[0]
         self.assertEqual(p1.name, "Port1")
         self.assertTrue(p1.link_up)
+        self.assertTrue(p1.is_upstream)
+        self.assertIn("Learned dynamic MACs", p1.upstream_reason)
+
+    def test_live_detect_upstream(self):
+        upstream = self.client.detect_upstream_port()
+        self.assertEqual(upstream.index, 0)
+        self.assertEqual(upstream.name, "Port1")
+        self.assertEqual(upstream.method, "dhost")
+        self.assertGreater(upstream.mac_count, 0)
+        self.assertIn("Learned dynamic MACs", upstream.reason)
 
     def test_live_stats(self):
         stats = self.client.get_stats()
@@ -56,6 +66,8 @@ class TestSwOSLive(unittest.TestCase):
         from mikrotik_swos.tui import generate_dashboard
         dashboard = generate_dashboard(self.client)
         self.assertIsNotNone(dashboard)
+        self.assertIn("Upstream: Port1", dashboard)
+        self.assertIn("UPSTREAM", dashboard)
 
 
 if __name__ == "__main__":
