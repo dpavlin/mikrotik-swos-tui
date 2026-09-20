@@ -9,8 +9,8 @@ Developed and verified against **MikroTik CSS106-1G-4P-1S / RB260GSP** (SwOS 2.7
 ## Features
 
 - **Full SwOS API Support:** Communicates directly over HTTP Digest authentication (`admin:<password>`) with custom JavaScript object literal parser and serializer (`SwOSCodec`).
-- **Data-Dense CLI Output:** Color-coded rich terminal tables and JSON output mode (`--json`) for scripting.
-- **Real-Time TUI Dashboard:** Live full-screen terminal monitor displaying ports, Tx/Rx rates, PoE power/current, error counters, and learned MAC addresses.
+- **Data-Dense CLI Output:** Clean fixed-width Unix terminal tables and JSON output mode (`--json`) for scripting.
+- **Real-Time Terminal Monitor:** Live terminal monitor with flicker-free in-place redraw displaying ports, Tx/Rx rates, PoE power/current, error counters, and learned MAC addresses.
 - **Port Administration:** Configure link state, auto-negotiation, speed (10M/100M/1G), duplex, flow control, PoE out modes (`off`, `auto`, `on`, `calibr`), and PVID.
 - **VLAN Management:** Inspect per-port VLAN modes and add/remove static VLAN table entries.
 - **System Settings:** Configure identity name, static IP, acquisition mode (DHCP / static), watchdog, and discovery protocol (MNDP).
@@ -24,7 +24,7 @@ Developed and verified against **MikroTik CSS106-1G-4P-1S / RB260GSP** (SwOS 2.7
 
 Python 3.9+ with standard packages:
 ```bash
-pip install click requests rich textual
+pip install click requests
 ```
 
 Run directly with `./swos.py`:
