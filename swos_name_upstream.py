@@ -18,6 +18,7 @@ import re
 import socket
 import subprocess
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -465,9 +466,15 @@ def apply_switch_rename(
     try:
         # Update identity in sys.b
         client.set_system(identity=info.proposed_identity)
+        time.sleep(0.3)
 
-        # Verify change in sys.b
-        verified = client.get("sys.b")
+        # Verify change in sys.b with retry
+        try:
+            verified = client.get("sys.b")
+        except Exception:
+            time.sleep(0.5)
+            verified = client.get("sys.b")
+
         actual_id = decode_hex_str(verified.get("id", ""))
         if actual_id != info.proposed_identity:
             info.status = "FAILED"
@@ -485,6 +492,8 @@ def apply_switch_rename(
         info.status = "RENAMED"
         return True
     except Exception as ex:
+        if debug:
+            console.print(f"[red]Error applying rename on {info.ip}: {ex}[/red]")
         info.status = "ERROR"
         info.error = str(ex)
         return False
