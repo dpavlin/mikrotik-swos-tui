@@ -1,186 +1,114 @@
-"""Interactive live terminal dashboard for MikroTik SwOS switches."""
+"""Fixed-width Unix-style terminal monitor for MikroTik SwOS switches."""
 
 from __future__ import annotations
 
 import datetime
 import sys
 import time
-from typing import Optional
-
-from rich.console import Console
-try:
-    from rich.console import Group
-except ImportError:
-    from rich.console import RenderGroup as Group
-from rich.live import Live
-from rich.markup import escape
-from rich.panel import Panel
-from rich.table import Table
-from rich.text import Text
+from typing import Any, Optional
 
 from mikrotik_swos.client import SwOSClient, SwOSError
 
 
-def generate_dashboard(client: SwOSClient) -> Group:
-    """Fetch live data from client and construct rich dashboard layout."""
+def generate_dashboard(client: SwOSClient) -> str:
+    """Fetch live data from client and format a fixed-width, jitter-free dashboard string."""
     sys_info = client.get_system()
     ports = client.get_ports()
     stats = client.get_stats()
     hosts = client.get_hosts(dynamic=True, static=False)
 
-    # 1. Header Information Panel
     now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    header_table = Table.grid(expand=True)
-    header_table.add_column(justify="left", ratio=1)
-    header_table.add_column(justify="center", ratio=1)
-    header_table.add_column(justify="right", ratio=1)
+    lines = []
+    lines.append(f"=== MikroTik SwOS Switch Monitor: {sys_info.identity} ({sys_info.board}) {sys_info.ip} [{sys_info.mac}] ===")
+    lines.append(f"SwOS: {sys_info.version} | Serial: {sys_info.serial} | Uptime: {sys_info.uptime_str} | {now_str}")
+    lines.append("")
 
-    left_text = Text.from_markup(
-        f"[bold cyan]Switch:[/] [white]{sys_info.identity}[/]  "
-        f"[bold cyan]Model:[/] [yellow]{sys_info.board}[/]  "
-        f"[bold cyan]SwOS:[/] [green]{sys_info.version}[/]"
-    )
-    center_text = Text.from_markup(
-        f"[bold cyan]IP:[/] [bright_white]{sys_info.ip}[/]  "
-        f"[bold cyan]MAC:[/] [bright_white]{sys_info.mac}[/]  "
-        f"[bold cyan]Serial:[/] [bright_white]{sys_info.serial}[/]"
-    )
-    right_text = Text.from_markup(
-        f"[bold cyan]Uptime:[/] [green]{sys_info.uptime_str}[/]  "
-        f"[bold cyan]Time:[/] [dim]{now_str}[/]"
-    )
-    header_table.add_row(left_text, center_text, right_text)
-    header_panel = Panel(header_table, title="[bold white on blue] MikroTik SwOS Switch Monitor [/]", border_style="blue")
-
-    # 2. Ports Live Status Table
-    ports_table = Table(title="Port Status & Traffic", expand=True, border_style="dim")
-    ports_table.add_column("Port", style="bold cyan", no_wrap=True)
-    ports_table.add_column("Link", justify="center", no_wrap=True)
-    ports_table.add_column("Speed", justify="center", no_wrap=True)
-    ports_table.add_column("PVID", justify="right", no_wrap=True)
-    ports_table.add_column("PoE", justify="center", no_wrap=True)
-    ports_table.add_column("Rx Rate", justify="right", style="bright_cyan", no_wrap=True)
-    ports_table.add_column("Tx Rate", justify="right", style="bright_green", no_wrap=True)
-    ports_table.add_column("Rx Total", justify="right", no_wrap=True)
-    ports_table.add_column("Tx Total", justify="right", no_wrap=True)
-    ports_table.add_column("Errors (Rx/Tx)", justify="center", no_wrap=True)
+    # 1. Ports Section
+    lines.append("Port Status & Traffic:")
+    p_hdr = f"{'PORT':<12} {'LINK':<6} {'SPEED':<8} {'PVID':>5} {'POE':<10} {'RX RATE':>11} {'TX RATE':>11} {'RX TOTAL':>11} {'TX TOTAL':>11} {'ERR (R/T)':>10}"
+    lines.append(p_hdr)
+    lines.append("-" * len(p_hdr))
 
     for i, p in enumerate(ports):
         st = stats[i] if i < len(stats) else None
-        link_markup = "[bold green]UP[/]" if p.link_up else "[dim red]DOWN[/]"
+        link_str = "UP" if p.link_up else "DOWN"
         speed_str = f"{p.speed} {p.duplex[0]}" if p.link_up else "-"
-        
         poe_str = p.poe_mode
         if p.poe_power_w > 0:
             poe_str += f" ({p.poe_power_w:.1f}W)"
-
         rx_rate = st.rx_rate_str if st else "-"
         tx_rate = st.tx_rate_str if st else "-"
         rx_bytes = st.rx_bytes_str if st else "-"
         tx_bytes = st.tx_bytes_str if st else "-"
+        err_str = f"{st.rx_errors}/{st.tx_errors}" if st else "0/0"
 
-        rx_err = st.rx_errors if st else 0
-        tx_err = st.tx_errors if st else 0
-        if rx_err > 0 or tx_err > 0:
-            err_str = f"[bold red]{rx_err}/{tx_err}[/]"
-        else:
-            err_str = "0/0"
+        port_label = f"{p.name} (#{p.index+1})"
+        row = f"{port_label:<12} {link_str:<6} {speed_str:<8} {p.default_vlan_id:>5} {poe_str:<10} {rx_rate:>11} {tx_rate:>11} {rx_bytes:>11} {tx_bytes:>11} {err_str:>10}"
+        lines.append(row)
 
-        ports_table.add_row(
-            f"{p.name} (#{p.index+1})",
-            link_markup,
-            speed_str,
-            str(p.default_vlan_id),
-            poe_str,
-            rx_rate,
-            tx_rate,
-            rx_bytes,
-            tx_bytes,
-            err_str,
-        )
+    lines.append("-" * len(p_hdr))
+    lines.append("")
 
-    # 3. Dynamic MAC Address Table
-    mac_table = Table(title=f"Learned MAC Host Table ({len(hosts)} entries)", expand=True, border_style="dim")
-    mac_table.add_column("MAC Address", style="bold yellow", no_wrap=True)
-    mac_table.add_column("Port", style="cyan", no_wrap=True)
-    mac_table.add_column("VLAN ID", justify="right", no_wrap=True)
-    mac_table.add_column("Type", justify="center", no_wrap=True)
-    mac_table.add_column("Drop", justify="center", no_wrap=True)
-    mac_table.add_column("Mirror", justify="center", no_wrap=True)
+    # 2. Hosts Section
+    lines.append(f"Learned MAC Host Table ({len(hosts)} entries):")
+    h_hdr = f"{'MAC ADDRESS':<19} {'PORT':<10} {'VLAN':>5}  {'TYPE':<8} {'DROP':<5} {'MIRROR':<6}"
+    lines.append(h_hdr)
+    lines.append("-" * len(h_hdr))
 
-    # Display up to 10 recent hosts
     for h in hosts[:12]:
-        mac_table.add_row(
-            escape(h.mac),
-            h.port_name,
-            str(h.vlan_id),
-            "Dynamic" if h.dynamic else "Static",
-            "Yes" if h.drop else "No",
-            "Yes" if h.mirror else "No",
-        )
-    if len(hosts) > 12:
-        mac_table.add_row(f"... and {len(hosts)-12} more ...", "", "", "", "", "")
+        type_str = "Dynamic" if h.dynamic else "Static"
+        drop_str = "Yes" if h.drop else "No"
+        mirr_str = "Yes" if h.mirror else "No"
+        h_row = f"{h.mac:<19} {h.port_name:<10} {h.vlan_id:>5}  {type_str:<8} {drop_str:<5} {mirr_str:<6}".rstrip()
+        lines.append(h_row)
 
-    footer = Text.from_markup("[dim]Press [bold white]Ctrl+C[/] to exit monitor.[/]")
-    return Group(header_panel, ports_table, mac_table, footer)
+    if len(hosts) > 12:
+        lines.append(f"... and {len(hosts)-12} more hosts ...")
+
+    lines.append("-" * len(h_hdr))
+    lines.append("Press Ctrl+C to exit monitor.")
+
+    return "\n".join(lines)
 
 
 def run_monitor(
     client: SwOSClient,
     interval: float = 2.0,
     once: bool = False,
-    console: Optional[Console] = None,
+    console: Optional[Any] = None,
 ) -> None:
     """Run interactive terminal monitoring loop or render a single snapshot."""
-    if console is None:
-        try:
-            from mikrotik_swos.cli import console as default_console
-            console = default_console
-        except ImportError:
-            console = Console(emoji=False)
-
-    # When --once is passed or when stdout is not a TTY (piped to less, cat, file, test runner):
+    # When --once is passed or when stdout is not an interactive TTY (piped to less, cat, file, test runner):
     # render a single clean untruncated snapshot and return immediately.
     if once or not sys.stdout.isatty():
         try:
             dashboard = generate_dashboard(client)
-            console.print(dashboard)
+            print(dashboard)
             return
         except SwOSError as e:
-            console.print(f"[bold red]Error connecting to switch:[/] {e}")
+            print(f"Error connecting to switch: {e}", file=sys.stderr)
             sys.exit(1)
 
-    console.print(f"[bold cyan]Connecting to MikroTik SwOS at {client.host}...[/]")
+    # Interactive TTY Mode
+    # 1. Clear screen once at initial startup and hide cursor
+    sys.stdout.write("\033[2J\033[H\033[?25l")
+    sys.stdout.flush()
+
     try:
-        initial_layout = generate_dashboard(client)
-    except SwOSError as e:
-        console.print(f"[bold red]Error connecting to switch:[/] {e}")
-        sys.exit(1)
-
-    # In dumb terminals, Rich Live skips rendering completely.
-    # Provide a clean clear-and-print loop.
-    if console.is_dumb_terminal:
-        try:
-            while True:
-                sys.stdout.write("\033[H\033[2J")
+        while True:
+            try:
+                dashboard = generate_dashboard(client)
+                # Overwrite in-place from (0,0) without clearing screen (zero flicker, zero column shifting)
+                sys.stdout.write(f"\033[H{dashboard}\n\033[J")
                 sys.stdout.flush()
-                console.print(generate_dashboard(client))
-                time.sleep(interval)
-        except KeyboardInterrupt:
-            pass
-        return
-
-    # In standard interactive terminals, use Live without alternate screen so the
-    # dashboard remains cleanly visible after Ctrl+C.
-    with Live(initial_layout, console=console, refresh_per_second=4, screen=False, transient=False) as live:
-        try:
-            while True:
-                time.sleep(interval)
-                try:
-                    dashboard = generate_dashboard(client)
-                    live.update(dashboard)
-                except SwOSError as e:
-                    err_text = Text.from_markup(f"[bold red]Connection error:[/] {e} (retrying...)")
-                    live.update(err_text)
-        except KeyboardInterrupt:
-            pass
+            except SwOSError as e:
+                now_str = datetime.datetime.now().strftime("%H:%M:%S")
+                sys.stdout.write(f"\033[HConnection error at {now_str}: {e} (retrying...)\033[J\n")
+                sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Restore cursor and move cursor down
+        sys.stdout.write("\033[?25h\n")
+        sys.stdout.flush()
