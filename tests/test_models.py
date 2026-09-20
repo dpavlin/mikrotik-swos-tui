@@ -84,6 +84,65 @@ class TestModels(unittest.TestCase):
         self.assertTrue(snmp.enabled)
         self.assertEqual(snmp.community, "public")
 
+    def test_detect_upstream_heuristics(self):
+        from mikrotik_swos.client import SwOSClient
+
+        client = SwOSClient("127.0.0.1", "admin", "admin")
+
+        link_data = self.fixtures["link"]
+        fwd_data = self.fixtures["fwd"]
+        ports = [PortInfo.from_dicts(i, link_data, fwd_data) for i in range(6)]
+
+        # 1. RSTP Root port heuristic (role 2 on Port2)
+        rstp_data = {"role": [3, 2, 3, 3, 3, 3]}
+        up = client.detect_upstream_port(ports=ports, rstp_data=rstp_data)
+        self.assertEqual(up.index, 1)
+        self.assertEqual(up.name, "Port2")
+        self.assertEqual(up.method, "rstp")
+        self.assertIn("RSTP Root Port", up.reason)
+
+        # 2. Configured Port Name heuristic (up: or uplink)
+        p_named = [PortInfo.from_dicts(i, link_data, fwd_data) for i in range(6)]
+        p_named[2].name = "up:dell-sw"
+        up_name = client.detect_upstream_port(ports=p_named, rstp_data={"role": [3, 3, 3, 3, 3, 3]})
+        self.assertEqual(up_name.index, 2)
+        self.assertEqual(up_name.name, "up:dell-sw")
+        self.assertEqual(up_name.method, "name")
+
+        # 3. Dynamic MAC Count heuristic
+        dhost_data = self.fixtures["dhost"]
+        port_names = ["Port1", "Port2", "Port3", "Port4", "Port5", "SFP"]
+        hosts = [HostEntry.from_dict(h, port_names, dynamic=True) for h in dhost_data]
+        up_dhost = client.detect_upstream_port(ports=ports, rstp_data={"role": [3, 3, 3, 3, 3, 3]}, hosts=hosts)
+        self.assertEqual(up_dhost.index, 0)
+        self.assertEqual(up_dhost.name, "Port1")
+        self.assertEqual(up_dhost.method, "dhost")
+        self.assertGreaterEqual(up_dhost.mac_count, 1)
+
+        # 4. Single active link heuristic
+        p_single = [PortInfo.from_dicts(i, link_data, fwd_data) for i in range(6)]
+        for p in p_single:
+            p.link_up = False
+        p_single[4].link_up = True
+        up_single = client.detect_upstream_port(ports=p_single, rstp_data={}, hosts=[])
+        self.assertEqual(up_single.index, 4)
+        self.assertEqual(up_single.name, "Port5")
+        self.assertEqual(up_single.method, "single_active")
+
+        # 5. Fallback lowest active link
+        up_fallback = client.detect_upstream_port(ports=ports, rstp_data={"role": [3, 3, 3, 3, 3, 3]}, hosts=[])
+        self.assertEqual(up_fallback.index, 0)
+        self.assertEqual(up_fallback.name, "Port1")
+        self.assertEqual(up_fallback.method, "fallback")
+
+        # 6. No active links
+        p_none = [PortInfo.from_dicts(i, link_data, fwd_data) for i in range(6)]
+        for p in p_none:
+            p.link_up = False
+        up_none = client.detect_upstream_port(ports=p_none)
+        self.assertEqual(up_none.index, -1)
+        self.assertEqual(up_none.method, "none")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 import logging
 import time
 from typing import Any, Dict, List, Optional, Union
@@ -24,6 +25,7 @@ from mikrotik_swos.models import (
     SfpInfo,
     SnmpInfo,
     SystemInfo,
+    UpstreamPortInfo,
     VlanEntry,
 )
 
@@ -217,7 +219,7 @@ class SwOSClient:
         self.auth = HTTPDigestAuth(self.username, self.password)
         return True
 
-    def get_ports(self) -> List[PortInfo]:
+    def get_ports(self, detect_upstream: bool = False) -> List[PortInfo]:
         """Fetch port status, link parameters, and PoE information."""
         link_data = self.get("link.b")
         fwd_data = self.get("fwd.b")
@@ -226,7 +228,128 @@ class SwOSClient:
         ports = []
         for i in range(num_ports):
             ports.append(PortInfo.from_dicts(i, link_data, fwd_data))
+        if detect_upstream:
+            upstream = self.detect_upstream_port(ports=ports)
+            if upstream.index >= 0:
+                for p in ports:
+                    if p.index == upstream.index:
+                        p.is_upstream = True
+                        p.upstream_reason = upstream.reason
         return ports
+
+    def detect_upstream_port(
+        self,
+        ports: Optional[List[PortInfo]] = None,
+        rstp_data: Optional[Dict[str, Any]] = None,
+        hosts: Optional[List[HostEntry]] = None,
+    ) -> UpstreamPortInfo:
+        """Detect the switch upstream/uplink port using multi-tier heuristics.
+
+        Priority order:
+        1. RSTP Root Port (role == 2 in rstp.b)
+        2. Configured port name (starts with 'up:' or contains 'uplink')
+        3. Learned dynamic MAC distribution (!dhost.b)
+        4. Single active link
+        5. Lowest active link (fallback)
+        """
+        if ports is None:
+            ports = self.get_ports(detect_upstream=False)
+
+        active_ports = [p for p in ports if p.link_up]
+        if not active_ports:
+            return UpstreamPortInfo(
+                index=-1,
+                name="None",
+                method="none",
+                reason="No active links",
+                mac_count=0,
+            )
+
+        # 1. RSTP Root Port check
+        if rstp_data is None:
+            try:
+                rstp_data = self.get_rstp()
+            except Exception as e:
+                self._log_debug(f"detect_upstream_port: failed to read rstp.b: {e}")
+                rstp_data = {}
+
+        if rstp_data:
+            roles = rstp_data.get("role", [])
+            # In SwOS 802.1w: 0=Disabled, 1=Alternate/Backup, 2=Root port, 3=Designated
+            for p in active_ports:
+                if p.index < len(roles) and roles[p.index] == 2:
+                    return UpstreamPortInfo(
+                        index=p.index,
+                        name=p.name,
+                        method="rstp",
+                        reason="RSTP Root Port",
+                        mac_count=0,
+                    )
+
+        # 2. Configured Port Name check
+        for p in active_ports:
+            nm = p.name.lower().strip()
+            if nm.startswith("up:") or "uplink" in nm:
+                return UpstreamPortInfo(
+                    index=p.index,
+                    name=p.name,
+                    method="name",
+                    reason=f"Configured uplink name '{p.name}'",
+                    mac_count=0,
+                )
+
+        # 3. Dynamic MAC Count check
+        if hosts is None:
+            try:
+                hosts = self.get_hosts(dynamic=True, static=False)
+            except Exception as e:
+                self._log_debug(f"detect_upstream_port: failed to read !dhost.b: {e}")
+                hosts = []
+
+        mac_counts = Counter(h.port for h in hosts if h.port >= 0)
+        active_counts = [(p, mac_counts.get(p.index, 0)) for p in active_ports]
+        if active_counts:
+            active_counts.sort(key=lambda x: x[1], reverse=True)
+            best_port, max_count = active_counts[0]
+            if max_count > 0:
+                if len(active_counts) == 1 or max_count > active_counts[1][1]:
+                    return UpstreamPortInfo(
+                        index=best_port.index,
+                        name=best_port.name,
+                        method="dhost",
+                        reason=f"Learned dynamic MACs ({max_count} MACs)",
+                        mac_count=max_count,
+                    )
+                else:
+                    return UpstreamPortInfo(
+                        index=best_port.index,
+                        name=best_port.name,
+                        method="dhost",
+                        reason=f"Learned dynamic MACs (tied, {max_count} MACs)",
+                        mac_count=max_count,
+                    )
+
+        # 4. Single active link
+        if len(active_ports) == 1:
+            p = active_ports[0]
+            return UpstreamPortInfo(
+                index=p.index,
+                name=p.name,
+                method="single_active",
+                reason="Only active link",
+                mac_count=0,
+            )
+
+        # 5. Lowest active link fallback
+        p = active_ports[0]
+        return UpstreamPortInfo(
+            index=p.index,
+            name=p.name,
+            method="fallback",
+            reason="Lowest active port (fallback)",
+            mac_count=0,
+        )
+
 
     def set_port(
         self,

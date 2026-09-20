@@ -102,6 +102,16 @@ class SystemInfo:
 
 
 @dataclass
+class UpstreamPortInfo:
+    """Detected upstream / uplink port details."""
+    index: int = -1
+    name: str = "None"
+    method: str = "none"
+    reason: str = "No upstream port detected"
+    mac_count: int = 0
+
+
+@dataclass
 class PortInfo:
     """Individual switch port configuration and link state."""
     index: int
@@ -120,6 +130,8 @@ class PortInfo:
     vlan_mode: str
     vlan_receive: str
     vlan_header: str
+    is_upstream: bool = False
+    upstream_reason: str = ""
 
     @classmethod
     def from_dicts(cls, index: int, link_data: Dict[str, Any], fwd_data: Optional[Dict[str, Any]] = None) -> PortInfo:
