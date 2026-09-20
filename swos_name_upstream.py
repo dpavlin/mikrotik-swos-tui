@@ -35,7 +35,11 @@ if str(REPO_ROOT) not in sys.path:
 from mikrotik_swos.client import SwOSClient, SwOSConnectionError, SwOSError
 from mikrotik_swos.codec import decode_hex_str, encode_hex_str
 
-console = Console(emoji=False)
+try:
+    _term_width = os.get_terminal_size().columns if sys.stdout.isatty() else 200
+except OSError:
+    _term_width = 200
+console = Console(emoji=False, width=max(180, _term_width))
 
 DEFAULT_INVENTORY = Path.home() / "m-swos" / "m-swos-ip-mac"
 FALLBACK_INVENTORY = Path("/home/dpavlin/m-swos/m-swos-ip-mac")
@@ -97,6 +101,7 @@ class TopologyDiscovery:
         self.port_mac_count: Counter[Tuple[str, str]] = Counter()
         self.mac_locations: Dict[str, List[Tuple[str, str]]] = {}
         self.switch_hierarchy: Dict[str, Set[str]] = {}  # parent -> children
+        self.mndp_neighbors: Dict[str, Tuple[str, str]] = {}  # mac -> (switch, port)
 
         self._load_mappings()
         self._load_neighbors()
@@ -157,8 +162,18 @@ class TopologyDiscovery:
                             if remote_port:
                                 self.inter_switch_links.add((remote_sw, remote_port))
                             self.switch_hierarchy.setdefault(local_sw, set()).add(remote_sw)
+                        elif len(parts) >= 3:
+                            # Check if parts[2] is a learned neighbor MAC
+                            n_mac = normalize_mac(parts[2])
+                            if re.match(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$", n_mac):
+                                if (
+                                    local_port not in ("24", "48", "50", "52", "sfp2-2")
+                                    and not local_port.startswith("vlan")
+                                    and (local_sw, local_port) not in self.inter_switch_links
+                                ):
+                                    self.mndp_neighbors[n_mac] = (local_sw, local_port)
             if self.debug:
-                console.print(f"[dim]Loaded {len(self.inter_switch_links)} inter-switch links from {self.neighbors_file}[/dim]")
+                console.print(f"[dim]Loaded {len(self.inter_switch_links)} inter-switch links and {len(self.mndp_neighbors)} MNDP neighbors from {self.neighbors_file}[/dim]")
         except Exception as ex:
             if self.debug:
                 console.print(f"[yellow]Warning reading neighbors file: {ex}[/yellow]")
@@ -224,6 +239,15 @@ class TopologyDiscovery:
             or None if unmapped.
         """
         mac = normalize_mac(mac)
+
+        # Priority 1: Check direct MikroTik MNDP neighbor table
+        if mac in self.mndp_neighbors:
+            m_sw, m_port = self.mndp_neighbors[mac]
+            norm_m_port = normalize_port_name(m_port)
+            if (m_sw, m_port) not in self.inter_switch_links and (m_sw, norm_m_port) not in self.inter_switch_links:
+                cnt = self.port_mac_count.get((m_sw, m_port), 1)
+                return (m_sw, m_port, cnt, "MikroTik MNDP direct neighbor")
+
         locs = self.mac_locations.get(mac, [])
         if not locs:
             return None
@@ -486,6 +510,52 @@ def load_inventory_ips(inventory_path: Path) -> List[str]:
     return sorted(ips, key=lambda ip: [int(x) for x in ip.split(".")])
 
 
+def update_inventory_file(
+    inventory_path: Path, results: List[SwOSSwitchInfo], debug: bool = False
+) -> int:
+    """Update switch comments in inventory file (m-swos-ip-mac) with verified identities."""
+    if not inventory_path.is_file():
+        if FALLBACK_INVENTORY.is_file():
+            inventory_path = FALLBACK_INVENTORY
+        else:
+            return 0
+
+    id_map = {
+        r.ip: r.proposed_identity
+        for r in results
+        if r.proposed_identity and r.status in ("RENAMED", "ALREADY_NAMED")
+    }
+    if not id_map:
+        return 0
+
+    new_lines = []
+    updated_count = 0
+    with open(inventory_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            clean = line.strip()
+            if not clean or clean.startswith("#"):
+                new_lines.append(line)
+                continue
+
+            parts = clean.split()
+            ip = parts[0]
+            if ip in id_map:
+                mac = parts[1] if len(parts) > 1 else ""
+                new_id = id_map[ip]
+                new_line = f"{ip} {mac} # {new_id}\n"
+                if new_line != line:
+                    updated_count += 1
+                new_lines.append(new_line)
+            else:
+                new_lines.append(line)
+
+    if updated_count > 0:
+        with open(inventory_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        console.print(f"[green]Updated {updated_count} switch comments in {inventory_path}[/green]")
+    return updated_count
+
+
 def refresh_dell_fdb(debug: bool = False) -> None:
     """Execute parallel snmp-mac-port refresh on black.ffzg.hr."""
     console.print("[bold blue]Refreshing Dell SNMP FDB tables across campus fleet...[/bold blue]")
@@ -507,6 +577,7 @@ def refresh_dell_fdb(debug: bool = False) -> None:
 @click.option("--range", "ip_range", type=str, default=None, help="IP range to inspect, e.g. 192.168.88.117-192.168.88.131.")
 @click.option("--apply", is_flag=True, help="Apply proposed identity renaming to SwOS hardware (default: dry-run).")
 @click.option("--rename-uplink-port", is_flag=True, help="Also set SwOS uplink port description (e.g. up:sw-foo:5).")
+@click.option("--update-inventory", is_flag=True, help="Update comments in m-swos-ip-mac with switch identities.")
 @click.option("--pattern", type=str, default="swos-{octet}-{upstream}", help="Naming template pattern (default: swos-{octet}-{upstream}).")
 @click.option("--refresh-fdb", is_flag=True, help="Run parallel SNMP walk to update /dev/shm/snmp-mac-port before discovery.")
 @click.option("--mac-threshold", type=int, default=5, help="Maximum learned MAC count for access port qualification (default: 5).")
@@ -521,6 +592,7 @@ def main(
     ip_range: Optional[str],
     apply: bool,
     rename_uplink_port: bool,
+    update_inventory: bool,
     pattern: str,
     refresh_fdb: bool,
     mac_threshold: int,
@@ -615,12 +687,12 @@ def main(
     )
     table.add_column("Switch IP", style="cyan", no_wrap=True)
     table.add_column("MAC Address", style="dim", no_wrap=True)
-    table.add_column("Uplink Port", style="blue")
-    table.add_column("Current Identity", style="white")
-    table.add_column("Upstream Switch", style="green")
-    table.add_column("Port", justify="right", style="yellow")
-    table.add_column("Proposed Identity", style="bold yellow")
-    table.add_column("Status", style="bold")
+    table.add_column("Uplink Port", style="blue", no_wrap=True)
+    table.add_column("Current Identity", style="white", no_wrap=True)
+    table.add_column("Upstream Switch", style="green", no_wrap=True)
+    table.add_column("Port", justify="right", style="yellow", no_wrap=True)
+    table.add_column("Proposed Identity", style="bold yellow", no_wrap=True)
+    table.add_column("Status", style="bold", no_wrap=True)
 
     for r in results:
         status_color = {
@@ -633,10 +705,16 @@ def main(
             "FAILED": "[bold red]FAILED[/bold red]",
         }.get(r.status, r.status)
 
+        if r.uplink_name:
+            method_tag = "RSTP" if "RSTP" in r.uplink_reason else "DHost"
+            uplink_str = f"{r.uplink_name} [dim]({method_tag})[/dim]"
+        else:
+            uplink_str = "-"
+
         table.add_row(
             r.ip,
             r.mac or "-",
-            f"{r.uplink_name} [dim]({r.uplink_reason.split(',')[0]})[/dim]" if r.uplink_name else "-",
+            uplink_str,
             r.current_identity or "-",
             r.upstream_switch or "-",
             str(r.upstream_port) if r.upstream_port is not None else "-",
@@ -664,6 +742,9 @@ def main(
         f"Unresolved Upstream: [yellow]{unresolved}[/yellow] | "
         f"Unreachable/Error: [red]{unreachable}[/red]"
     )
+
+    if update_inventory and (apply or renamed > 0 or already > 0):
+        update_inventory_file(inventory, results, debug=debug)
 
     if not apply and proposed > 0:
         console.print(
