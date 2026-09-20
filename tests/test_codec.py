@@ -86,6 +86,11 @@ class TestSwOSCodec(unittest.TestCase):
         self.assertEqual(format_bytes(1024), "1.0 KiB")
         self.assertEqual(format_bytes(1048576), "1.0 MiB")
 
+    def test_swos_hash_password(self):
+        from mikrotik_swos.codec import swos_hash_password
+        h = swos_hash_password("foo", "")
+        self.assertEqual(h, "6472d24464166b6271272cf3dd1464ad0f479a5109cdc8e40d14998fdcbef5df")
+
 
 if __name__ == "__main__":
     unittest.main()

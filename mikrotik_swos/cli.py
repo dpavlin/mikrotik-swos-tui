@@ -774,10 +774,15 @@ def cmd_set_port(
 @cli.command("set-system")
 @click.option("--identity", help="Set switch system identity name")
 @click.option("--watchdog", type=click.Choice(["0", "1"]), help="Enable (1) or disable (0) hardware watchdog")
-@click.option("--discovery", type=click.Choice(["0", "1"]), help="Enable (1) or disable (0) MikroTik discovery")
+@click.option("--discovery", type=click.Choice(["0", "1"]), help="Enable (1) or disable (0) MikroTik discovery protocol")
 @click.option("--ivl", type=click.Choice(["0", "1"]), help="Enable (1) or disable (0) Independent VLAN Lookup")
+@click.option("--igmp", type=click.Choice(["0", "1"]), help="Enable (1) or disable (0) IGMP snooping")
 @click.option("--static-ip", help="Set static IPv4 address (e.g. 192.168.88.1)")
 @click.option("--ip-mode", type=click.Choice(["dhcp", "static", "dhcp-only"], case_sensitive=False), help="Address acquisition mode")
+@click.option("--allow-from", help="Allowed subnet for management access (e.g. 192.168.88.0/24 or 0.0.0.0/0)")
+@click.option("--allow-ports", help="Comma-separated ports allowed for management access (e.g. 1,2,3,4,5,6)")
+@click.option("--allow-vlan", type=int, help="VLAN ID allowed for management access (0 for any)")
+@click.option("--poe-in-long-cable", type=click.Choice(["0", "1"]), help="Port1 PoE In Long Cable mode (0 or 1)")
 @click.pass_context
 def cmd_set_system(
     ctx: click.Context,
@@ -785,16 +790,27 @@ def cmd_set_system(
     watchdog: Optional[str],
     discovery: Optional[str],
     ivl: Optional[str],
+    igmp: Optional[str],
     static_ip: Optional[str],
     ip_mode: Optional[str],
+    allow_from: Optional[str],
+    allow_ports: Optional[str],
+    allow_vlan: Optional[int],
+    poe_in_long_cable: Optional[str],
 ):
-    """Modify switch system identity, discovery, or IP settings."""
+    """Modify switch system identity, discovery, management filters, or IP settings."""
     client = get_client(ctx)
     wdt = (watchdog == "1") if watchdog is not None else None
     dsc = (discovery == "1") if discovery is not None else None
     ivl_val = (ivl == "1") if ivl is not None else None
+    igmp_val = (igmp == "1") if igmp is not None else None
+    lcbl_val = (poe_in_long_cable == "1") if poe_in_long_cable is not None else None
     iptp_map = {"dhcp": 0, "static": 1, "dhcp-only": 2}
     mode_val = iptp_map.get(ip_mode.lower()) if ip_mode else None
+
+    port_indices = None
+    if allow_ports is not None:
+        port_indices = [int(p.strip()) - 1 for p in allow_ports.split(",") if p.strip().isdigit()]
 
     console.print("[bold cyan]Updating system configuration...[/]")
     try:
@@ -803,13 +819,44 @@ def cmd_set_system(
             watchdog=wdt,
             discovery=dsc,
             ivl=ivl_val,
+            igmp=igmp_val,
             static_ip=static_ip,
             ip_mode=mode_val,
+            allow_from=allow_from,
+            allow_ports=port_indices,
+            allow_vlan=allow_vlan,
+            poe_in_long_cable=lcbl_val,
         )
         info = client.get_system()
-        console.print(f"[bold green]✓ System updated successfully:[/] Identity={info.identity}, IP={info.ip}, Mode={info.ip_mode}, Watchdog={info.watchdog}")
+        console.print(
+            f"[bold green]✓ System updated successfully:[/] "
+            f"Identity={info.identity}, IP={info.ip}, Mode={info.ip_mode}, "
+            f"Watchdog={info.watchdog}, AllowFrom={info.allow_from_ip}/{info.allow_from_mask}, "
+            f"AllowPorts={[p+1 for p in info.allow_from_ports]}, AllowVLAN={info.allow_from_vlan}"
+        )
     except SwOSError as e:
         console.print(f"[bold red]Failed to update system:[/] {e}")
+        sys.exit(1)
+
+
+# --- SET-PASSWORD ---
+
+@cli.command("set-password")
+@click.option("--old-password", default="", help="Current administrator password [default: empty]")
+@click.option("--new-password", prompt=True, hide_input=True, confirmation_prompt=True, help="New administrator password")
+@click.pass_context
+def cmd_set_password(ctx: click.Context, old_password: str, new_password: str):
+    """Change administrative password on SwOS switch."""
+    client = get_client(ctx)
+    if not old_password and client.password:
+        old_password = client.password
+
+    console.print(f"[bold cyan]Updating administrator password on {client.host}...[/]")
+    try:
+        client.change_password(new_password=new_password, old_password=old_password)
+        console.print("[bold green]✓ Administrator password changed successfully.[/]")
+    except Exception as e:
+        console.print(f"[bold red]Failed to change password:[/] {e}")
         sys.exit(1)
 
 

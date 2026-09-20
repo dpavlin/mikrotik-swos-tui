@@ -275,3 +275,36 @@ def ports_to_bitmask(ports: Sequence[int]) -> int:
     for p in ports:
         mask |= (1 << p)
     return mask
+
+
+def swos_hash_password(new_pwd: str, old_pwd: str) -> str:
+    """Compute SwOS password change hash (RC4-like cipher matching SwOS engine.js va())."""
+    key = old_pwd if old_pwd != "" else "*"
+    while len(key) < 16:
+        key += key
+    key = key[:16]
+
+    sbox = list(range(256))
+    j = 0
+    for i in range(256):
+        j = (j + ord(key[i % len(key)]) + sbox[i]) & 0xFF
+        sbox[i], sbox[j] = sbox[j], sbox[i]
+
+    c = 0
+    d = 0
+
+    def prng() -> int:
+        nonlocal c, d
+        c = (c + 1) & 0xFF
+        d = (d + sbox[c]) & 0xFF
+        sbox[c], sbox[d] = sbox[d], sbox[c]
+        return sbox[(sbox[c] + sbox[d]) & 0xFF]
+
+    payload = [ord(ch) for ch in old_pwd] + [0] + [ord(ch) for ch in new_pwd]
+    while len(payload) < 32:
+        payload.append(0)
+
+    for i in range(64):
+        payload[i & 31] ^= prng()
+
+    return "".join(f"{b:02x}" for b in payload[:32])

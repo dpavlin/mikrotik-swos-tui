@@ -14,6 +14,8 @@ from mikrotik_swos.codec import (
     decode_hex_str,
     encode_hex_str,
     encode_ip,
+    ports_to_bitmask,
+    swos_hash_password,
 )
 from mikrotik_swos.models import (
     HostEntry,
@@ -156,6 +158,10 @@ class SwOSClient:
         igmp: Optional[bool] = None,
         static_ip: Optional[str] = None,
         ip_mode: Optional[int] = None,
+        allow_from: Optional[str] = None,
+        allow_ports: Optional[List[int]] = None,
+        allow_vlan: Optional[int] = None,
+        poe_in_long_cable: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Update system settings in sys.b."""
         current = self.get("sys.b")
@@ -174,6 +180,20 @@ class SwOSClient:
             updates["sip"] = encode_ip(static_ip)
         if ip_mode is not None:
             updates["iptp"] = ip_mode
+        if allow_from is not None:
+            if "/" in allow_from:
+                ip_part, mask_part = allow_from.split("/", 1)
+                updates["alla"] = encode_ip(ip_part.strip())
+                updates["allm"] = int(mask_part.strip())
+            else:
+                updates["alla"] = encode_ip(allow_from.strip())
+                updates["allm"] = 32
+        if allow_ports is not None:
+            updates["allp"] = ports_to_bitmask(allow_ports)
+        if allow_vlan is not None:
+            updates["avln"] = int(allow_vlan)
+        if poe_in_long_cable is not None:
+            updates["lcbl"] = 1 if poe_in_long_cable else 0
 
         writable_keys = [
             "iptp", "sip", "id", "alla", "allm", "allp", "avln",
@@ -183,6 +203,19 @@ class SwOSClient:
         payload.update(updates)
         self.post("sys.b", payload)
         return payload
+
+    def change_password(self, new_password: str, old_password: str = "") -> bool:
+        """Change administrative password via /!pwd.b."""
+        if len(new_password) > 15:
+            raise ValueError("New password cannot exceed 15 characters.")
+        if len(old_password) > 15:
+            raise ValueError("Old password cannot exceed 15 characters.")
+        pwd_hash = swos_hash_password(new_password, old_password)
+        payload = {"pwd": pwd_hash}
+        self.post("!pwd.b", payload)
+        self.password = new_password
+        self.auth = HTTPDigestAuth(self.username, self.password)
+        return True
 
     def get_ports(self) -> List[PortInfo]:
         """Fetch port status, link parameters, and PoE information."""
