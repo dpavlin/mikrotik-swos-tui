@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import re
+import signal
 import sys
 from typing import Any, List, Optional
 
@@ -1046,7 +1047,12 @@ def cmd_tui(ctx: click.Context, interval: float, once: bool):
 
 
 def main():
-    cli()
+    if hasattr(signal, "SIGPIPE"):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+    try:
+        cli()
+    except BrokenPipeError:
+        sys.exit(0)
 
 
 if __name__ == "__main__":
